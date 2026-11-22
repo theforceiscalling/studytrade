@@ -15,9 +15,57 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
+from django.contrib.auth import views as auth_views
 from django.urls import include, path
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+
+    # Authentication & Portal Lock
+    path(
+        'login/',
+        auth_views.LoginView.as_view(template_name='registration/login.html'),
+        name='login',
+    ),
+    path(
+        'logout/',
+        auth_views.LogoutView.as_view(next_page='login'),
+        name='logout',
+    ),
+
+    # Forgot Password Flow
+    path(
+        'forgot-password/',
+        auth_views.PasswordResetView.as_view(
+            template_name='registration/forgot_password.html',
+            email_template_name='registration/password_reset_email.html',
+            subject_template_name='registration/password_reset_subject.txt',
+            success_url='/forgot-password/done/',
+        ),
+        name='forgot_password',
+    ),
+    path(
+        'forgot-password/done/',
+        auth_views.PasswordResetDoneView.as_view(
+            template_name='registration/forgot_password_done.html',
+        ),
+        name='password_reset_done',
+    ),
+    path(
+        'reset/<uidb64>/<token>/',
+        auth_views.PasswordResetConfirmView.as_view(
+            template_name='registration/password_reset_confirm.html',
+            success_url='/reset/done/',
+        ),
+        name='password_reset_confirm',
+    ),
+    path(
+        'reset/done/',
+        auth_views.PasswordResetCompleteView.as_view(
+            template_name='registration/password_reset_complete.html',
+        ),
+        name='password_reset_complete',
+    ),
+
     path('', include('dashboard.urls')),
 ]

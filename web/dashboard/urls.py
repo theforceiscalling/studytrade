@@ -32,6 +32,7 @@ urlpatterns = [
     path("api/paper/auto-trader/configure/", views.api_auto_trader_configure, name="api_auto_trader_configure"),
     path("api/paper/auto-trader/toggle/", views.api_auto_trader_toggle, name="api_auto_trader_toggle"),
     path("api/paper/auto-trader/run-cycle/", views.api_auto_trader_run_cycle, name="api_auto_trader_run_cycle"),
+    path("api/paper/sync-nse-delayed/", views.api_sync_nse_delayed_prices, name="api_sync_nse_delayed"),
     path("api/gamma-squeeze/ranks/", views.api_gamma_ranks, name="api_gamma_ranks"),
     path("api/gamma-squeeze/calibrate/", views.api_gamma_calibrate, name="api_gamma_calibrate"),
     path("api/sync-bhavcopy/", views.api_sync_bhavcopy, name="api_sync_bhavcopy"),

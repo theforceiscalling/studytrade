@@ -478,6 +478,12 @@ def paper_view(request: HttpRequest) -> HttpResponse:
         except Exception:
             pass
 
+    try:
+        from studytrade.data.fetchers.nse_delayed import get_nse_delayed_fetcher
+        nse_stats = get_nse_delayed_fetcher().sync_stats
+    except Exception:
+        nse_stats = {}
+
     context = {
         "paper_days": paper_days,
         "paper_days_pct": min(100, int((paper_days / 90) * 100)),
@@ -494,6 +500,7 @@ def paper_view(request: HttpRequest) -> HttpResponse:
         "trade_history": trades_df.to_dict(orient="records") if not trades_df.empty else [],
         "auto_config": _get_auto_trader_config(),
         "strategy_ranks": _get_top_backtest_ranks(),
+        "nse_stats": nse_stats,
     }
     return render(request, "paper.html", context)
 
@@ -913,6 +920,28 @@ def api_sync_bhavcopy(request: HttpRequest) -> JsonResponse:
             {
                 "success": True,
                 "message": f"Successfully synchronized official NSE Bhavcopy for {stats.get('resolved_date')}. Row counts: {stats.get('row_counts', {})}.",
+                "stats": stats,
+            }
+        )
+    except Exception as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=500)
+
+
+@csrf_exempt
+@require_POST
+def api_sync_nse_delayed_prices(request: HttpRequest) -> JsonResponse:
+    """Fetch official delayed option chain from NSE India website and update tick cache & open positions."""
+    try:
+        from studytrade.data.fetchers.nse_delayed import get_nse_delayed_fetcher
+        from studytrade.paper.journal import PaperJournal
+
+        fetcher = get_nse_delayed_fetcher()
+        jnl = PaperJournal(str(DATA_DIR / "paper_journal.db"))
+        stats = fetcher.sync_to_tick_cache(journal=jnl, force=True)
+        return JsonResponse(
+            {
+                "success": True,
+                "message": f"Synchronized {stats.get('ticks_updated', 0)} option ticks from official NSE India option chain.",
                 "stats": stats,
             }
         )

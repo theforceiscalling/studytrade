@@ -318,9 +318,16 @@ class AutoTrader:
     def run_cycle(self) -> dict[str, Any]:
         """
         Execute one complete autonomous cycle:
-        1. Evaluate exits and auto-square-off hit positions.
-        2. Evaluate entries and auto-buy eligible signals.
+        1. Sync delayed quotes from official NSE option chain.
+        2. Evaluate exits and auto-square-off hit positions.
+        3. Evaluate entries and auto-buy eligible signals.
         """
+        try:
+            from studytrade.data.fetchers.nse_delayed import get_nse_delayed_fetcher
+            get_nse_delayed_fetcher().sync_to_tick_cache(journal=self.journal)
+        except Exception as e:
+            logger.warning("NSE delayed sync error in run_cycle: %s", e)
+
         closed = self.evaluate_and_auto_square_off()
         opened = self.evaluate_and_auto_buy()
 
