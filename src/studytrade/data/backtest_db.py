@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 
-def init_backtest_db(db_path: str = "data/backtest_runs.db") -> None:
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+DEFAULT_BACKTEST_DB = str(PROJECT_ROOT / "data" / "backtest_runs.db")
+
+
+def init_backtest_db(db_path: str = DEFAULT_BACKTEST_DB) -> None:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -54,7 +58,7 @@ def save_backtest_run(
     sharpe_ratio: float,
     max_drawdown_pct: float,
     params: dict[str, Any],
-    db_path: str = "data/backtest_runs.db",
+    db_path: str = DEFAULT_BACKTEST_DB,
 ) -> int:
     init_backtest_db(db_path)
     with sqlite3.connect(db_path) as conn:
@@ -93,7 +97,7 @@ def save_backtest_run(
         return cur.lastrowid or 0
 
 
-def get_all_backtest_runs(db_path: str = "data/backtest_runs.db") -> list[dict[str, Any]]:
+def get_all_backtest_runs(db_path: str = DEFAULT_BACKTEST_DB) -> list[dict[str, Any]]:
     """Retrieve all saved backtest executions in reverse chronological order."""
     init_backtest_db(db_path)
     with sqlite3.connect(db_path) as conn:
@@ -121,7 +125,7 @@ def get_all_backtest_runs(db_path: str = "data/backtest_runs.db") -> list[dict[s
         return runs
 
 
-def get_backtest_run_by_id(run_id: int, db_path: str = "data/backtest_runs.db") -> dict[str, Any] | None:
+def get_backtest_run_by_id(run_id: int, db_path: str = DEFAULT_BACKTEST_DB) -> dict[str, Any] | None:
     """Retrieve a single backtest run by its ID."""
     init_backtest_db(db_path)
     with sqlite3.connect(db_path) as conn:

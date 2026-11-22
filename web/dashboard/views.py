@@ -303,7 +303,7 @@ def backtest_view(request: HttpRequest) -> HttpResponse:
         pass
 
     from studytrade.data.backtest_db import get_all_backtest_runs
-    past_runs = _enrich_runs(get_all_backtest_runs())
+    past_runs = _enrich_runs(get_all_backtest_runs(str(DATA_DIR / "backtest_runs.db")))
     ranked_runs = sorted(past_runs, key=lambda x: x.get("stoxkart_net_pnl", 0.0), reverse=True)
     for idx, r in enumerate(ranked_runs):
         r["rank"] = idx + 1
@@ -1001,14 +1001,14 @@ def _enrich_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @require_GET
 def api_backtest_history(request: HttpRequest) -> JsonResponse:
     from studytrade.data.backtest_db import get_all_backtest_runs
-    runs = _enrich_runs(get_all_backtest_runs())
+    runs = _enrich_runs(get_all_backtest_runs(str(DATA_DIR / "backtest_runs.db")))
     return JsonResponse({"success": True, "runs": runs})
 
 
 @require_GET
 def api_get_backtest_run(request: HttpRequest, run_id: int) -> JsonResponse:
     from studytrade.data.backtest_db import get_backtest_run_by_id
-    run = get_backtest_run_by_id(run_id)
+    run = get_backtest_run_by_id(run_id, str(DATA_DIR / "backtest_runs.db"))
     if not run:
         return JsonResponse({"success": False, "error": f"Backtest run #{run_id} not found"}, status=404)
     return JsonResponse({"success": True, "run": run})
@@ -1191,6 +1191,7 @@ def api_run_backtest(request: HttpRequest) -> JsonResponse:
             sharpe_ratio=perf.sharpe_ratio,
             max_drawdown_pct=perf.max_drawdown_pct,
             params=params,
+            db_path=str(DATA_DIR / "backtest_runs.db"),
         )
 
         return JsonResponse(
