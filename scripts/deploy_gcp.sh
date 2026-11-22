@@ -57,6 +57,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
+pip install -e .
 pip install gunicorn
 
 # Run Django migrations and initialize data
@@ -75,12 +76,13 @@ User=${APP_USER}
 Group=${APP_USER}
 WorkingDirectory=${APP_DIR}/web
 Environment="PATH=${APP_DIR}/.venv/bin"
+Environment="PYTHONPATH=${APP_DIR}/src:${APP_DIR}/web"
 ExecStart=${APP_DIR}/.venv/bin/gunicorn \
     --workers 2 \
     --bind 127.0.0.1:${PORT} \
     --timeout 120 \
-    --access-logfile /var/log/studytrade_access.log \
-    --error-logfile /var/log/studytrade_error.log \
+    --access-logfile - \
+    --error-logfile - \
     studytrade_web.wsgi:application
 Restart=always
 RestartSec=5
