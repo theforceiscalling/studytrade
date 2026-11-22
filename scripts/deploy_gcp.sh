@@ -63,7 +63,15 @@ pip install gunicorn
 # Run Django migrations and initialize data
 cd web
 python manage.py migrate --noinput
+
+echo "[*] Populating Market Data Catalog & Paper Trading Journal..."
+cd "${APP_DIR}"
+python -m studytrade.data.seed_db
 EOF
+
+# Ensure all data files are owned by the application user
+chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}/data"
+chmod -R 775 "${APP_DIR}/data"
 
 echo "[5/6] Creating Systemd Service for Gunicorn..."
 cat > /etc/systemd/system/studytrade.service << EOF
