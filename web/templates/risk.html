@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+
+{% block title %}Risk Management & Sizing — StudyTrade{% endblock %}
+
+{% block content %}
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-3">
+            <h4 class="fw-bold mb-1"><i class="bi bi-calculator text-info me-2"></i>Position Sizing & Circuit Breaker Risk Controls</h4>
+            <p class="small text-secondary mb-0">Systematic option buying requires strict capital allocation. Option premiums can drop to zero, making lot sizing the primary defense against ruin.</p>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <!-- Sizing Inputs -->
+    <div class="col-lg-4">
+        <div class="card-custom p-4">
+            <h5 class="fw-bold mb-3 text-light"><i class="bi bi-sliders2 text-info me-2"></i>Position Sizer Inputs</h5>
+            
+            <div class="mb-3">
+                <label class="form-label small text-muted">Total Trading Capital (₹)</label>
+                <input type="number" id="capitalInput" class="form-control bg-dark border-secondary text-light" value="200000" step="10000" onchange="calculateSizing()">
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label small text-muted">Risk Fraction per Trade (%)</label>
+                <input type="number" id="riskPctInput" class="form-control bg-dark border-secondary text-light" value="1.5" step="0.1" min="0.5" max="5.0" onchange="calculateSizing()">
+            </div>
+
+            <div class="row g-2 mb-3">
+                <div class="col-6">
+                    <label class="form-label small text-muted">Instrument</label>
+                    <select id="symSelect" class="form-select bg-dark border-secondary text-light" onchange="calculateSizing()">
+                        {% for sym in symbols %}
+                            <option value="{{ sym }}">{{ sym }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-6">
+                    <label class="form-label small text-muted">Option Premium (₹)</label>
+                    <input type="number" id="premiumInput" class="form-control bg-dark border-secondary text-light" value="145.0" step="5" onchange="calculateSizing()">
+                </div>
+            </div>
+
+            <div class="row g-2 mb-3">
+                <div class="col-6">
+                    <label class="form-label small text-muted">Current ATR</label>
+                    <input type="number" id="atrInput" class="form-control bg-dark border-secondary text-light" value="190.0" step="5" onchange="calculateSizing()">
+                </div>
+                <div class="col-6">
+                    <label class="form-label small text-muted">Baseline ATR</label>
+                    <input type="number" id="baseAtrInput" class="form-control bg-dark border-secondary text-light" value="150.0" step="5" onchange="calculateSizing()">
+                </div>
+            </div>
+
+            <div class="row g-2 mb-3">
+                <div class="col-6">
+                    <label class="form-label small text-muted">Estimated Win Rate</label>
+                    <input type="number" id="wrInput" class="form-control bg-dark border-secondary text-light" value="0.38" step="0.02" min="0.1" max="0.9" onchange="calculateSizing()">
+                </div>
+                <div class="col-6">
+                    <label class="form-label small text-muted">Payoff Ratio (W:L)</label>
+                    <input type="number" id="payoffInput" class="form-control bg-dark border-secondary text-light" value="2.6" step="0.1" min="1.0" max="6.0" onchange="calculateSizing()">
+                </div>
+            </div>
+
+            <button class="btn btn-cyan w-100" onclick="calculateSizing()">
+                <i class="bi bi-arrow-repeat me-1"></i> Update Sizing
+            </button>
+        </div>
+    </div>
+
+    <!-- Sizing Models Comparison -->
+    <div class="col-lg-8">
+        <div class="row g-3 mb-4">
+            <!-- Fixed Fractional -->
+            <div class="col-md-4">
+                <div class="stat-card border-info">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="badge bg-info-subtle text-info border border-info-subtle">Model 1</span>
+                        <small class="text-muted">Constant Risk</small>
+                    </div>
+                    <div class="stat-label">Fixed Fractional</div>
+                    <div id="ffLots" class="stat-val text-info my-2">-- Lots</div>
+                    <div class="small text-secondary">
+                        Contracts: <strong id="ffContracts" class="text-light">--</strong><br>
+                        Allocated: <strong id="ffAlloc" class="text-light">₹--</strong><br>
+                        Risk Exposure: <strong id="ffRisk" class="text-danger">₹--</strong>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Volatility Adjusted -->
+            <div class="col-md-4">
+                <div class="stat-card border-warning">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="badge bg-warning-subtle text-warning border border-warning-subtle">Model 2</span>
+                        <small class="text-muted">ATR Scaled</small>
+                    </div>
+                    <div class="stat-label">Volatility-Adjusted</div>
+                    <div id="volLots" class="stat-val text-warning my-2">-- Lots</div>
+                    <div class="small text-secondary">
+                        Contracts: <strong id="volContracts" class="text-light">--</strong><br>
+                        Allocated: <strong id="volAlloc" class="text-light">₹--</strong><br>
+                        Risk Exposure: <strong id="volRisk" class="text-danger">₹--</strong>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Half Kelly -->
+            <div class="col-md-4">
+                <div class="stat-card border-success">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="badge bg-success-subtle text-success border border-success-subtle">Model 3</span>
+                        <small class="text-muted">Optimal Growth</small>
+                    </div>
+                    <div class="stat-label">Half-Kelly Criterion</div>
+                    <div id="kellyLots" class="stat-val text-success my-2">-- Lots</div>
+                    <div class="small text-secondary">
+                        Contracts: <strong id="kellyContracts" class="text-light">--</strong><br>
+                        Allocated: <strong id="kellyAlloc" class="text-light">₹--</strong><br>
+                        Risk Exposure: <strong id="kellyRisk" class="text-danger">₹--</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Circuit Breakers Display -->
+        <div class="card-custom p-4">
+            <h5 class="fw-bold mb-3"><i class="bi bi-shield-shaded text-danger me-2"></i>Account Circuit Breakers & Kill Switches</h5>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <div class="p-3 rounded bg-dark border border-secondary">
+                        <div class="small text-muted">Daily Loss Limit</div>
+                        <div class="fs-5 fw-bold text-danger">3.0% of Capital</div>
+                        <div class="small text-secondary mt-1">Trading automatically halts for the rest of the day if daily drawdown hits 3%.</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-3 rounded bg-dark border border-secondary">
+                        <div class="small text-muted">Weekly Loss Limit</div>
+                        <div class="fs-5 fw-bold text-danger">6.0% of Capital</div>
+                        <div class="small text-secondary mt-1">Trading halted for the remaining calendar week to prevent revenge-trading spirals.</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-3 rounded bg-dark border border-secondary">
+                        <div class="small text-muted">Max Concurrent Positions</div>
+                        <div class="fs-5 fw-bold text-warning">3 Positions Max</div>
+                        <div class="small text-secondary mt-1">Prevents portfolio over-concentration during correlated directional moves.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.addEventListener('DOMContentLoaded', calculateSizing);
+
+    async function calculateSizing() {
+        const payload = {
+            capital: parseFloat(document.getElementById('capitalInput').value),
+            risk_pct: parseFloat(document.getElementById('riskPctInput').value),
+            symbol: document.getElementById('symSelect').value,
+            premium: parseFloat(document.getElementById('premiumInput').value),
+            atr: parseFloat(document.getElementById('atrInput').value),
+            base_atr: parseFloat(document.getElementById('baseAtrInput').value),
+            win_rate: parseFloat(document.getElementById('wrInput').value),
+            payoff: parseFloat(document.getElementById('payoffInput').value)
+        };
+
+        try {
+            const res = await fetch("{% url 'dashboard:api_calc_sizing' %}", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.success) {
+                // Fixed fractional
+                document.getElementById('ffLots').innerHTML = `${data.fixed_fractional.lots} Lots`;
+                document.getElementById('ffContracts').innerHTML = `${data.fixed_fractional.contracts}`;
+                document.getElementById('ffAlloc').innerHTML = `₹${data.fixed_fractional.capital_allocated.toLocaleString()}`;
+                document.getElementById('ffRisk').innerHTML = `₹${data.fixed_fractional.capital_at_risk.toLocaleString()}`;
+
+                // Vol adjusted
+                document.getElementById('volLots').innerHTML = `${data.volatility_adjusted.lots} Lots`;
+                document.getElementById('volContracts').innerHTML = `${data.volatility_adjusted.contracts}`;
+                document.getElementById('volAlloc').innerHTML = `₹${data.volatility_adjusted.capital_allocated.toLocaleString()}`;
+                document.getElementById('volRisk').innerHTML = `₹${data.volatility_adjusted.capital_at_risk.toLocaleString()}`;
+
+                // Half kelly
+                document.getElementById('kellyLots').innerHTML = `${data.half_kelly.lots} Lots`;
+                document.getElementById('kellyContracts').innerHTML = `${data.half_kelly.contracts}`;
+                document.getElementById('kellyAlloc').innerHTML = `₹${data.half_kelly.capital_allocated.toLocaleString()}`;
+                document.getElementById('kellyRisk').innerHTML = `₹${data.half_kelly.capital_at_risk.toLocaleString()}`;
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
+</script>
+{% endblock %}

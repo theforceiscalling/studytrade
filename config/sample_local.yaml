@@ -1,0 +1,26 @@
+# ============================================================
+# StudyTrade — Local Configuration Overrides
+# ============================================================
+# Copy this to config/local.yaml and edit.
+# local.yaml is gitignored — safe for API keys and personal settings.
+# Values here override config/default.yaml.
+# ============================================================
+
+# Example: use a smaller capital for testing
+# capital:
+#   initial: 200000
+
+# Example: switch to CSV data
+# data:
+#   source: "csv"
+#   csv:
+#     spot_file: "data/raw/nifty_spot.csv"
+#     option_chain_dir: "data/raw/option_chains/"
+
+# Example: enable ML
+# ml:
+#   enabled: true
+
+# Example: more aggressive risk
+# risk:
+#   max_risk_per_trade_pct: 2.0

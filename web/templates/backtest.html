@@ -1,0 +1,972 @@
+{% extends "base.html" %}
+
+{% block title %}Systematic Backtesting — StudyTrade{% endblock %}
+
+{% block content %}
+<div class="row g-4 mb-4">
+    <!-- Backtest Configuration Form -->
+    <div class="col-lg-4">
+        <div class="card-custom p-4">
+            <h5 class="fw-bold mb-3 text-light"><i class="bi bi-sliders text-info me-2"></i>Strategy Configuration</h5>
+            
+            <form id="backtestForm" onsubmit="event.preventDefault(); runBacktest();">
+                <div class="mb-3">
+                    <label class="form-label small text-muted">Strategy Model</label>
+                    <select id="stratSelect" class="form-select bg-dark border-secondary text-light">
+                        {% for id, name in strategies %}
+                            <option value="{{ id }}">{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label small text-muted">Underlying Symbol</label>
+                    <select id="symSelect" class="form-select bg-dark border-secondary text-light">
+                        {% for sym in symbols %}
+                            <option value="{{ sym }}">{{ sym }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <!-- Custom Backtest Date Range -->
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <label class="form-label small text-muted mb-0">Backtest Date Range</label>
+                        <span class="badge bg-secondary-subtle text-info border border-info-subtle" style="font-size: 0.68rem;">Customizable</span>
+                    </div>
+                    <div class="row g-2 mb-1">
+                        <div class="col-6">
+                            <label class="form-label small text-secondary mb-0" style="font-size: 0.72rem;">Start Date</label>
+                            <input type="date" id="startDateInput" class="form-control form-control-sm bg-dark border-secondary text-light" value="{{ default_start|default:'2024-01-01' }}" min="{{ min_date|default:'2016-01-01' }}" max="{{ max_date|default:'2026-11-20' }}">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small text-secondary mb-0" style="font-size: 0.72rem;">End Date</label>
+                            <input type="date" id="endDateInput" class="form-control form-control-sm bg-dark border-secondary text-light" value="{{ default_end|default:'2026-11-20' }}" min="{{ min_date|default:'2016-01-01' }}" max="{{ max_date|default:'2026-11-20' }}">
+                        </div>
+                    </div>
+                    <div class="d-flex flex-wrap gap-1 mt-1">
+                        <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" style="font-size: 0.68rem;" onclick="setDatePreset('2024-01-01', '2024-06-21')">Jan-Jun 24</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" style="font-size: 0.68rem;" onclick="setDatePreset('2024-01-01', '2026-11-20')">2024-2026</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" style="font-size: 0.68rem;" onclick="setDatePreset('2021-01-01', '2026-11-20')">Last 5Y</button>
+                        <button type="button" class="btn btn-sm btn-outline-info py-0 px-1" style="font-size: 0.68rem;" onclick="setDatePreset('2016-01-01', '2026-11-20')">Full 10Y</button>
+                    </div>
+                </div>
+
+                <div class="row g-2 mb-3">
+                    <div class="col-6">
+                        <label class="form-label small text-muted">Initial Capital (₹)</label>
+                        <input type="number" id="capitalInput" class="form-control bg-dark border-secondary text-light" value="200000" step="10000">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small text-muted">Risk Per Trade (%)</label>
+                        <input type="number" id="riskPctInput" class="form-control bg-dark border-secondary text-light" value="1.5" step="0.1" min="0.5" max="5.0">
+                    </div>
+                </div>
+
+                <div class="row g-2 mb-3">
+                    <div class="col-6">
+                        <label class="form-label small text-muted">Target Delta ($\Delta$)</label>
+                        <select id="deltaSelect" class="form-select bg-dark border-secondary text-light">
+                            <option value="0.35" selected>0.35 (Directional OTM)</option>
+                            <option value="0.50">0.50 (ATM Strike)</option>
+                            <option value="0.25">0.25 (Far OTM)</option>
+                        </select>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small text-muted">Slippage (pts)</label>
+                        <input type="number" id="slippageInput" class="form-control bg-dark border-secondary text-light" value="0.5" step="0.1">
+                    </div>
+                </div>
+
+                <div class="row g-2 mb-3">
+                    <div class="col-6">
+                        <label class="form-label small text-muted">Stop Loss (%)</label>
+                        <input type="number" id="slInput" class="form-control bg-dark border-secondary text-light" value="30.0" step="5">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small text-muted">Profit Target (%)</label>
+                        <input type="number" id="targetInput" class="form-control bg-dark border-secondary text-light" value="60.0" step="5">
+                    </div>
+                </div>
+
+                <div class="row g-2 mb-3">
+                    <div class="col-6">
+                        <label class="form-label small text-muted">Min DTE</label>
+                        <input type="number" id="minDteInput" class="form-control bg-dark border-secondary text-light" value="2">
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small text-muted">Max DTE</label>
+                        <input type="number" id="maxDteInput" class="form-control bg-dark border-secondary text-light" value="20">
+                    </div>
+                </div>
+
+                <div class="p-2 border border-secondary rounded bg-dark mb-3 small text-secondary">
+                    <i class="bi bi-info-circle text-info me-1"></i> Fills at Ask/Bid spread + tick slippage. Full statutory NSE schedule (STT, GST, Exchange, SEBI, Stamp) deducted.
+                </div>
+
+                <button type="submit" id="runBtn" class="btn btn-cyan w-100 py-2">
+                    <i class="bi bi-play-circle-fill me-1"></i> Run Systematic Backtest
+                </button>
+            </form>
+        </div>
+
+        <!-- Saved Backtest Runs History -->
+        <div class="card-custom p-3 mt-4">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="fw-bold mb-0 text-light">
+                    <i class="bi bi-clock-history text-cyan me-1"></i>Saved Backtest Runs
+                </h6>
+                <span class="badge bg-dark border border-secondary text-info" id="savedRunsCountBadge">{{ past_runs|length }} Runs</span>
+            </div>
+            <div style="max-height: 420px; overflow-y: auto;" class="pe-1" id="savedRunsListContainer">
+                {% for run in past_runs %}
+                    <div class="p-2 mb-2 rounded bg-dark border border-secondary-subtle">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span class="badge bg-secondary font-monospace">#{{ run.id }}</span>
+                            <span class="badge {% if run.strategy == 'gamma_squeeze' %}bg-warning-subtle text-warning{% else %}bg-info-subtle text-info{% endif %} border border-secondary" style="font-size: 0.65rem;">
+                                {{ run.strategy }}
+                            </span>
+                            <span class="small text-muted" style="font-size: 0.7rem;">{{ run.timestamp|slice:":16" }}</span>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-baseline mt-2">
+                            <span class="small text-light">{{ run.symbol }} (₹{{ run.initial_capital|floatformat:0 }})</span>
+                            <span class="font-monospace fw-bold {% if run.gross_pnl > 0 %}text-success{% else %}text-danger{% endif %}">
+                                {% if run.gross_pnl > 0 %}+{% endif %}₹{{ run.gross_pnl|floatformat:0 }}
+                            </span>
+                        </div>
+                        <div class="d-flex justify-content-between text-secondary mt-1" style="font-size: 0.72rem;">
+                            <span>Trades: <strong class="text-light">{{ run.total_trades }}</strong></span>
+                            <span>Win: <strong class="text-light">{{ run.win_rate_pct|floatformat:1 }}%</strong></span>
+                            <span>Sharpe: <strong class="text-light">{{ run.sharpe_ratio|floatformat:2 }}</strong></span>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center mt-2 pt-1 border-top border-secondary-subtle">
+                            <span class="text-muted" style="font-size: 0.68rem;">Stoxkart: <strong class="text-success">₹{{ run.stoxkart_net_pnl|floatformat:0 }}</strong></span>
+                            <button type="button" class="btn btn-sm btn-outline-cyan py-0 px-2" style="font-size: 0.7rem;" onclick="loadSavedRun({{ run.id }})">
+                                Load Run
+                            </button>
+                        </div>
+                    </div>
+                {% empty %}
+                    <div class="text-center py-3 text-muted small">No saved backtest runs yet.</div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Backtest Performance Results & Charts -->
+    <div class="col-lg-8">
+        <div id="resultsPlaceholder" class="card-custom p-5 text-center text-muted">
+            <i class="bi bi-cpu fs-1 text-secondary mb-3"></i>
+            <h5>Ready for Execution</h5>
+            <p>Configure parameters on the left and click "Run Systematic Backtest" to evaluate strategy expectancy after all statutory costs and slippage.</p>
+        </div>
+
+        <div id="resultsContainer" style="display: none;">
+            <!-- KPI Summary Cards -->
+            <div class="row g-3 mb-4">
+                <div class="col-md-3">
+                    <div class="stat-card position-relative" id="statCardPnl">
+                        <div class="stat-label d-flex justify-content-between align-items-center">
+                            <span>Realized P&L</span>
+                            <span class="badge bg-secondary-subtle text-info border border-info-subtle" style="font-size: 0.65rem;" title="Hover to view Broker Fee Comparison">Hover for Brokers <i class="bi bi-info-circle"></i></span>
+                        </div>
+                        <div id="metricReturn" class="stat-val text-success">+0.0%</div>
+                        <div id="metricGrossPnl" class="small text-light mt-1">Gross P&L: ₹0.00</div>
+                        <div id="metricNetPnl" class="small text-success fw-bold" style="cursor: pointer;">Net Realized: ₹0.00</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card">
+                        <div class="stat-label">Win Rate / Trades</div>
+                        <div id="metricWinRate" class="stat-val text-info">0.0%</div>
+                        <div id="metricTrades" class="small text-muted mt-1">0 trades</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card">
+                        <div class="stat-label">Profit Factor / Payoff</div>
+                        <div id="metricPF" class="stat-val text-warning">0.00</div>
+                        <div id="metricPayoff" class="small text-muted mt-1">Payoff: 0.00x</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card">
+                        <div class="stat-label">Sharpe / Max DD</div>
+                        <div id="metricSharpe" class="stat-val text-light">0.00</div>
+                        <div id="metricMaxDD" class="small text-danger mt-1">Max DD: -0.0%</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Broker Charges & Net Realized PnL Comparison (Zerodha vs Angel One vs Stoxkart) -->
+            <div class="card-custom p-3 mb-4 border border-secondary-subtle">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold text-light mb-0">
+                        <i class="bi bi-calculator text-warning me-2"></i>Broker Charges & Net Realized PnL Comparison
+                    </h6>
+                    <span class="small text-muted"><i class="bi bi-info-circle me-1"></i>Hover over any card or costs badge to inspect breakdown</span>
+                </div>
+                <div class="row g-2 text-center" id="brokerCardsContainer">
+                    <div class="col-md-4">
+                        <div class="p-2 rounded bg-dark border border-secondary broker-card" id="cardZerodha" style="cursor: pointer;">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="fw-bold text-info"><i class="bi bi-shield-check me-1"></i>Zerodha</span>
+                                <span class="badge bg-secondary-subtle text-light" style="font-size: 0.7rem;">Flat ₹20/order</span>
+                            </div>
+                            <div class="mt-2 text-start small">
+                                <div class="d-flex justify-content-between"><span>Brokerage:</span> <span id="zBrok" class="text-light">₹0</span></div>
+                                <div class="d-flex justify-content-between"><span>Statutory + GST:</span> <span id="zStat" class="text-muted">₹0</span></div>
+                                <div class="d-flex justify-content-between border-top border-secondary pt-1 mt-1"><span class="fw-bold">Total Charges:</span> <span id="zTotal" class="text-danger fw-bold">₹0</span></div>
+                                <div class="d-flex justify-content-between mt-1"><span class="fw-bold">Net Realized PnL:</span> <span id="zNet" class="fw-bold text-success">₹0</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="p-2 rounded bg-dark border border-secondary broker-card" id="cardAngel" style="cursor: pointer;">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="fw-bold text-primary"><i class="bi bi-lightning-charge me-1"></i>Angel One</span>
+                                <span class="badge bg-secondary-subtle text-light" style="font-size: 0.7rem;">Flat ₹20/order</span>
+                            </div>
+                            <div class="mt-2 text-start small">
+                                <div class="d-flex justify-content-between"><span>Brokerage:</span> <span id="aBrok" class="text-light">₹0</span></div>
+                                <div class="d-flex justify-content-between"><span>Statutory + GST:</span> <span id="aStat" class="text-muted">₹0</span></div>
+                                <div class="d-flex justify-content-between border-top border-secondary pt-1 mt-1"><span class="fw-bold">Total Charges:</span> <span id="aTotal" class="text-danger fw-bold">₹0</span></div>
+                                <div class="d-flex justify-content-between mt-1"><span class="fw-bold">Net Realized PnL:</span> <span id="aNet" class="fw-bold text-success">₹0</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="p-2 rounded bg-dark border border-success-subtle broker-card" id="cardStoxkart" style="cursor: pointer;">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="fw-bold text-success"><i class="bi bi-star-fill text-warning me-1"></i>Stoxkart</span>
+                                <span class="badge bg-success-subtle text-success border border-success-subtle" style="font-size: 0.7rem;">₹0 on Loss / ₹15 on Profit</span>
+                            </div>
+                            <div class="mt-2 text-start small">
+                                <div class="d-flex justify-content-between"><span>Brokerage:</span> <span id="sBrok" class="text-light">₹0</span></div>
+                                <div class="d-flex justify-content-between"><span>Statutory + GST:</span> <span id="sStat" class="text-muted">₹0</span></div>
+                                <div class="d-flex justify-content-between border-top border-secondary pt-1 mt-1"><span class="fw-bold">Total Charges:</span> <span id="sTotal" class="text-danger fw-bold">₹0</span></div>
+                                <div class="d-flex justify-content-between mt-1"><span class="fw-bold">Net Realized PnL:</span> <span id="sNet" class="fw-bold text-success">₹0</span></div>
+                                <div class="d-flex justify-content-between mt-1 text-warning fw-bold border-top border-secondary pt-1"><span>Savings vs Zerodha:</span> <span id="sSavings">+₹0</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Equity & Drawdown Charts -->
+            <div class="card-custom p-3 mb-4">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold text-light mb-0"><i class="bi bi-graph-up text-info me-2"></i>Portfolio Equity Curve (₹)</h6>
+                    <div class="position-relative">
+                        <span id="metricCosts" class="badge bg-danger-subtle text-danger border border-danger-subtle p-2 cursor-pointer" style="cursor: pointer;" title="Hover to view dynamic broker fee comparison">
+                            <i class="bi bi-tag-fill me-1"></i>Total Costs Paid: ₹0
+                        </span>
+                        <!-- Floating Hover Tooltip Card -->
+                        <div id="brokerHoverCard" class="card shadow-lg p-3 position-absolute end-0 top-100 mt-2 bg-dark border border-secondary text-light" style="display: none; z-index: 1060; width: 390px; pointer-events: none;">
+                            <div class="fw-bold text-warning border-bottom border-secondary pb-1 mb-2 d-flex justify-content-between">
+                                <span><i class="bi bi-bank2 me-1"></i>Broker Costs Breakdown</span>
+                                <span id="hoverTradesCount" class="text-muted small">0 trades</span>
+                            </div>
+                            <div class="small mb-2">
+                                <div class="d-flex justify-content-between"><span>Gross Realized P&L:</span> <span id="hoverGrossPnl" class="fw-bold text-light">₹0.00</span></div>
+                            </div>
+                            <table class="table table-sm table-dark table-bordered mb-2 text-center" style="font-size: 0.78rem;">
+                                <thead class="table-secondary text-dark">
+                                    <tr>
+                                        <th>Broker</th>
+                                        <th>Brokerage</th>
+                                        <th>Charges</th>
+                                        <th>Net Realized</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td class="text-info fw-bold">Zerodha</td>
+                                        <td id="hZBrok">₹0</td>
+                                        <td id="hZTot" class="text-danger">₹0</td>
+                                        <td id="hZNet" class="fw-bold text-success">₹0</td>
+                                    </tr>
+                                    <tr>
+                                        <td class="text-primary fw-bold">Angel One</td>
+                                        <td id="hABrok">₹0</td>
+                                        <td id="hATot" class="text-danger">₹0</td>
+                                        <td id="hANet" class="fw-bold text-success">₹0</td>
+                                    </tr>
+                                    <tr class="table-success text-dark">
+                                        <td class="fw-bold">Stoxkart*</td>
+                                        <td id="hSBrok">₹0</td>
+                                        <td id="hSTot" class="text-danger">₹0</td>
+                                        <td id="hSNet" class="fw-bold text-success">₹0</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <div class="small text-warning" style="font-size: 0.72rem;">
+                                *<strong>Stoxkart</strong> charges <strong>₹0 brokerage</strong> on loss trades (₹15/order on profit). Net Savings: <span id="hoverSavings" class="fw-bold text-success">₹0</span>!
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="equityChart" style="height: 320px;"></div>
+            </div>
+
+            <div class="card-custom p-3 mb-4">
+                <h6 class="fw-bold text-light mb-2"><i class="bi bi-arrow-down-right-circle text-danger me-2"></i>Underwater Drawdown Profile (%)</h6>
+                <div id="drawdownChart" style="height: 180px;"></div>
+            </div>
+
+            <!-- Trade History Log -->
+            <div class="card-custom p-4">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="fw-bold mb-0">
+                        <i class="bi bi-list-check text-info me-2"></i>Executed Trade Journal 
+                        <span id="tradesCountBadge" class="badge bg-info-subtle text-info border border-info-subtle ms-2 fs-6">0 Trades</span>
+                    </h5>
+                    <button class="btn btn-sm btn-outline-info" onclick="sendToMonteCarlo()">
+                        <i class="bi bi-dice-5 me-1"></i> Send Trades to Monte Carlo Lab
+                    </button>
+                </div>
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table table-custom table-hover text-center">
+                        <thead class="sticky-top">
+                            <tr>
+                                <th>#</th>
+                                <th>Option Symbol</th>
+                                <th>Entry Date</th>
+                                <th>Exit Date</th>
+                                <th>Entry (₹)</th>
+                                <th>Exit (₹)</th>
+                                <th>Lots</th>
+                                <th>Costs (₹)</th>
+                                <th>Net PnL (₹)</th>
+                                <th>Return %</th>
+                                <th>Exit Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tradeLogBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Strategy Performance Leaderboard & Historical Rankings Card -->
+        <div class="card-custom p-3 mt-4 border border-secondary-subtle" id="leaderboardCard">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 pb-2 border-bottom border-secondary">
+                <div>
+                    <h5 class="fw-bold text-light mb-1">
+                        <i class="bi bi-trophy-fill text-warning me-2"></i>Strategy Performance Leaderboard & Historical Rankings
+                    </h5>
+                    <div class="text-muted small">
+                        All backtest simulations evaluated across statutory broker fees, slippage, and time horizon.
+                    </div>
+                </div>
+                <!-- Interactive Sort Controls -->
+                <div class="d-flex flex-wrap align-items-center gap-1 mt-2 mt-md-0">
+                    <span class="small text-muted me-1"><i class="bi bi-sort-down me-1"></i>Sort By:</span>
+                    <button type="button" class="btn btn-sm btn-outline-cyan active py-1 px-2" id="sortBtnNetPnl" onclick="sortLeaderboard('stoxkart_net_pnl')">
+                        <i class="bi bi-currency-rupee me-1"></i>Net P&L (₹)
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" id="sortBtnReturn" onclick="sortLeaderboard('net_return_pct')">
+                        <i class="bi bi-percent me-1"></i>Net Return %
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" id="sortBtnSharpe" onclick="sortLeaderboard('sharpe_ratio')">
+                        <i class="bi bi-graph-up me-1"></i>Sharpe Ratio
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" id="sortBtnWinRate" onclick="sortLeaderboard('win_rate_pct')">
+                        <i class="bi bi-bullseye me-1"></i>Win Rate
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" id="sortBtnDuration" onclick="sortLeaderboard('duration_days')">
+                        <i class="bi bi-clock-history me-1"></i>Time Horizon
+                    </button>
+                </div>
+            </div>
+
+            <!-- Leaderboard Table Container -->
+            <div class="table-responsive" style="max-height: 520px; overflow-y: auto;">
+                <table class="table table-dark table-hover align-middle mb-0" style="font-size: 0.82rem;" id="leaderboardTable">
+                    <thead class="table-secondary sticky-top" style="z-index: 5;">
+                        <tr>
+                            <th style="width: 50px;">Rank</th>
+                            <th>Strategy Spec & Delta</th>
+                            <th>Configuration Details</th>
+                            <th>Testing Time Horizon</th>
+                            <th class="text-end">Win Rate / Trades</th>
+                            <th class="text-end">Net Return %</th>
+                            <th class="text-end">Stoxkart Net P&L</th>
+                            <th class="text-end">Sharpe</th>
+                            <th class="text-center" style="width: 90px;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leaderboardBody">
+                        {% for run in ranked_runs %}
+                        <tr>
+                            <td>
+                                {% if forloop.counter == 1 %}
+                                    <span class="badge bg-warning text-dark fw-bold">🥇 #1</span>
+                                {% elif forloop.counter == 2 %}
+                                    <span class="badge bg-light text-dark fw-bold">🥈 #2</span>
+                                {% elif forloop.counter == 3 %}
+                                    <span class="badge bg-danger-subtle text-warning fw-bold">🥉 #3</span>
+                                {% else %}
+                                    <span class="badge bg-secondary font-monospace">#{{ forloop.counter }}</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <div class="fw-bold text-light">
+                                    <span class="badge {% if run.strategy == 'gamma_squeeze' %}bg-warning-subtle text-warning{% else %}bg-info-subtle text-info{% endif %} me-1" style="font-size: 0.65rem;">
+                                        {{ run.strategy }}
+                                    </span>
+                                    <span class="font-monospace text-secondary">#{{ run.id }}</span>
+                                </div>
+                                <div class="small text-info fw-bold mt-1">
+                                    {{ run.delta_label }}
+                                </div>
+                            </td>
+                            <td>
+                                <div class="small text-light">
+                                    <span>Target: <strong class="text-success">{{ run.profit_target_pct }}%</strong></span> |
+                                    <span>SL: <strong class="text-danger">{{ run.stop_loss_pct }}%</strong></span>
+                                </div>
+                                <div class="small text-muted mt-1" style="font-size: 0.72rem;">
+                                    <span>DTE: {{ run.min_dte }}-{{ run.max_dte }}</span> |
+                                    <span>Cap: ₹{{ run.initial_capital|floatformat:0 }}</span>
+                                </div>
+                            </td>
+                            <td>
+                                <div class="text-light small font-monospace">
+                                    {{ run.duration_str }}
+                                </div>
+                                <div class="small text-muted" style="font-size: 0.7rem;">
+                                    Simulated: {{ run.timestamp|slice:":16" }}
+                                </div>
+                            </td>
+                            <td class="text-end">
+                                <div class="fw-bold text-light">{{ run.win_rate_pct|floatformat:1 }}%</div>
+                                <div class="small text-muted">{{ run.total_trades }} trades</div>
+                            </td>
+                            <td class="text-end font-monospace">
+                                <div class="fw-bold {% if run.net_return_pct > 0 %}text-success{% else %}text-danger{% endif %}">
+                                    {% if run.net_return_pct > 0 %}+{% endif %}{{ run.net_return_pct }}%
+                                </div>
+                                {% if run.cagr_pct %}
+                                    <div class="small text-muted" style="font-size: 0.7rem;">CAGR: {{ run.cagr_pct }}%/yr</div>
+                                {% endif %}
+                            </td>
+                            <td class="text-end font-monospace">
+                                <div class="fw-bold {% if run.stoxkart_net_pnl > 0 %}text-success{% else %}text-danger{% endif %}">
+                                    {% if run.stoxkart_net_pnl > 0 %}+{% endif %}₹{{ run.stoxkart_net_pnl|floatformat:0 }}
+                                </div>
+                                <div class="small text-secondary" style="font-size: 0.7rem;">Gross: ₹{{ run.gross_pnl|floatformat:0 }}</div>
+                            </td>
+                            <td class="text-end font-monospace text-light fw-bold">
+                                {{ run.sharpe_ratio|floatformat:2 }}
+                            </td>
+                            <td class="text-center">
+                                <button type="button" class="btn btn-sm btn-outline-cyan py-1 px-2" style="font-size: 0.72rem;" onclick="loadSavedRun({{ run.id }})">
+                                    <i class="bi bi-box-arrow-in-up-right me-1"></i>Load
+                                </button>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="9" class="text-center py-4 text-muted">No historical simulations found. Run a backtest or batch sweep to populate rankings.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let lastTradePnls = [];
+
+    async function runBacktest() {
+        const btn = document.getElementById('runBtn');
+        const placeholder = document.getElementById('resultsPlaceholder');
+        const container = document.getElementById('resultsContainer');
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Simulating...';
+
+        const payload = {
+            strategy: document.getElementById('stratSelect').value,
+            symbol: document.getElementById('symSelect').value,
+            start_date: document.getElementById('startDateInput').value,
+            end_date: document.getElementById('endDateInput').value,
+            initial_capital: parseFloat(document.getElementById('capitalInput').value),
+            risk_per_trade_pct: parseFloat(document.getElementById('riskPctInput').value),
+            target_delta: parseFloat(document.getElementById('deltaSelect').value),
+            slippage_pts: parseFloat(document.getElementById('slippageInput').value),
+            stop_loss_pct: parseFloat(document.getElementById('slInput').value),
+            profit_target_pct: parseFloat(document.getElementById('targetInput').value),
+            min_dte: parseInt(document.getElementById('minDteInput').value),
+            max_dte: parseInt(document.getElementById('maxDteInput').value)
+        };
+
+        try {
+            const res = await fetch("{% url 'dashboard:api_run_backtest' %}", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+
+            if (!data.success) {
+                alert("Backtest error: " + data.error);
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-play-circle-fill me-1"></i> Run Systematic Backtest';
+                return;
+            }
+
+            placeholder.style.display = 'none';
+            container.style.display = 'block';
+
+            // Metrics
+            const m = data.metrics;
+            const bc = m.broker_comparison;
+            const sNet = Number(bc?.stoxkart?.net_pnl || m.stoxkart_net_pnl || m.total_net_pnl || 0);
+            const zNet = Number(bc?.zerodha?.net_pnl || m.zerodha_net_pnl || m.total_net_pnl || 0);
+            const initCap = Number(m.initial_capital || 20000);
+            const netRetPct = ((sNet / initCap) * 100).toFixed(1);
+
+            document.getElementById('metricReturn').innerHTML = `${netRetPct >= 0 ? '+' : ''}${netRetPct}%`;
+            document.getElementById('metricReturn').className = `stat-val ${netRetPct >= 0 ? 'text-success' : 'text-danger'}`;
+            document.getElementById('metricGrossPnl').innerHTML = `Gross Realized: ₹${Number(m.gross_realized_pnl || 0).toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
+            document.getElementById('metricNetPnl').innerHTML = `Net Realized: <span class="text-success">₹${sNet.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span> <span class="text-muted fw-normal" style="font-size:0.75rem;">(Stoxkart)</span> | <span class="text-light">₹${zNet.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span> <span class="text-muted fw-normal" style="font-size:0.75rem;">(Zerodha)</span>`;
+            document.getElementById('metricNetPnl').className = `small fw-bold text-success`;
+            document.getElementById('metricWinRate').innerHTML = `${m.win_rate_pct}%`;
+            document.getElementById('metricTrades').innerHTML = `${m.total_trades} trades executed`;
+            document.getElementById('metricPF').innerHTML = `${m.profit_factor}`;
+            document.getElementById('metricPayoff').innerHTML = `Payoff: ${m.payoff_ratio}x`;
+            document.getElementById('metricSharpe').innerHTML = `${m.sharpe_ratio}`;
+            document.getElementById('metricMaxDD').innerHTML = `Max DD: -${m.max_drawdown_pct}%`;
+            document.getElementById('metricCosts').innerHTML = `<i class="bi bi-tag-fill me-1"></i>Total Costs: ₹${Number(bc?.zerodha?.total_charges || m.total_costs || 0).toLocaleString('en-IN', {minimumFractionDigits: 2})} <span class="badge bg-light text-dark ms-1">Hover ℹ️</span>`;
+
+            // Broker comparison data binding
+            const bc = m.broker_comparison;
+            if (bc) {
+                // Zerodha
+                document.getElementById('zBrok').innerText = `₹${bc.zerodha.brokerage.toLocaleString()}`;
+                const zStatTot = (bc.zerodha.total_charges - bc.zerodha.brokerage).toFixed(2);
+                document.getElementById('zStat').innerText = `₹${Number(zStatTot).toLocaleString()}`;
+                document.getElementById('zTotal').innerText = `₹${bc.zerodha.total_charges.toLocaleString()}`;
+                document.getElementById('zNet').innerText = `₹${bc.zerodha.net_pnl.toLocaleString()}`;
+                document.getElementById('zNet').className = `fw-bold ${bc.zerodha.net_pnl >= 0 ? 'text-success' : 'text-danger'}`;
+
+                // Angel One
+                document.getElementById('aBrok').innerText = `₹${bc.angel_one.brokerage.toLocaleString()}`;
+                const aStatTot = (bc.angel_one.total_charges - bc.angel_one.brokerage).toFixed(2);
+                document.getElementById('aStat').innerText = `₹${Number(aStatTot).toLocaleString()}`;
+                document.getElementById('aTotal').innerText = `₹${bc.angel_one.total_charges.toLocaleString()}`;
+                document.getElementById('aNet').innerText = `₹${bc.angel_one.net_pnl.toLocaleString()}`;
+                document.getElementById('aNet').className = `fw-bold ${bc.angel_one.net_pnl >= 0 ? 'text-success' : 'text-danger'}`;
+
+                // Stoxkart
+                document.getElementById('sBrok').innerText = `₹${bc.stoxkart.brokerage.toLocaleString()}`;
+                const sStatTot = (bc.stoxkart.total_charges - bc.stoxkart.brokerage).toFixed(2);
+                document.getElementById('sStat').innerText = `₹${Number(sStatTot).toLocaleString()}`;
+                document.getElementById('sTotal').innerText = `₹${bc.stoxkart.total_charges.toLocaleString()}`;
+                document.getElementById('sNet').innerText = `₹${bc.stoxkart.net_pnl.toLocaleString()}`;
+                document.getElementById('sNet').className = `fw-bold ${bc.stoxkart.net_pnl >= 0 ? 'text-success' : 'text-danger'}`;
+                document.getElementById('sSavings').innerText = `+₹${bc.stoxkart_savings.toLocaleString()}`;
+
+                // Floating Hover Card elements
+                document.getElementById('hoverTradesCount').innerText = `${bc.total_trades} trades (${bc.winning_trades}W / ${bc.losing_trades}L)`;
+                document.getElementById('hoverGrossPnl').innerText = `₹${bc.gross_realized_pnl.toLocaleString()}`;
+                document.getElementById('hZBrok').innerText = `₹${bc.zerodha.brokerage.toLocaleString()}`;
+                document.getElementById('hZTot').innerText = `₹${bc.zerodha.total_charges.toLocaleString()}`;
+                document.getElementById('hZNet').innerText = `₹${bc.zerodha.net_pnl.toLocaleString()}`;
+                document.getElementById('hABrok').innerText = `₹${bc.angel_one.brokerage.toLocaleString()}`;
+                document.getElementById('hATot').innerText = `₹${bc.angel_one.total_charges.toLocaleString()}`;
+                document.getElementById('hANet').innerText = `₹${bc.angel_one.net_pnl.toLocaleString()}`;
+                document.getElementById('hSBrok').innerText = `₹${bc.stoxkart.brokerage.toLocaleString()}`;
+                document.getElementById('hSTot').innerText = `₹${bc.stoxkart.total_charges.toLocaleString()}`;
+                document.getElementById('hSNet').innerText = `₹${bc.stoxkart.net_pnl.toLocaleString()}`;
+                document.getElementById('hoverSavings').innerText = `₹${bc.stoxkart_savings.toLocaleString()}`;
+            }
+
+            // Hover trigger setup for dynamic tooltip card
+            const hoverCard = document.getElementById('brokerHoverCard');
+            const costBadge = document.getElementById('metricCosts');
+            const pnlCard = document.getElementById('statCardPnl');
+
+            function showHover() { hoverCard.style.display = 'block'; }
+            function hideHover() { hoverCard.style.display = 'none'; }
+
+            costBadge.onmouseenter = showHover;
+            costBadge.onmouseleave = hideHover;
+            pnlCard.onmouseenter = showHover;
+            pnlCard.onmouseleave = hideHover;
+
+            // Plotly Equity
+            const traceEq = {
+                x: data.equity_curve.dates,
+                y: data.equity_curve.equity,
+                mode: 'lines',
+                name: 'Portfolio Equity',
+                line: { color: '#06b6d4', width: 2 }
+            };
+            const layoutEq = {
+                plot_bgcolor: '#111827',
+                paper_bgcolor: '#111827',
+                font: { color: '#9ca3af' },
+                margin: { t: 10, r: 20, b: 30, l: 60 },
+                xaxis: { gridcolor: '#1f2937' },
+                yaxis: { title: 'Equity (₹)', gridcolor: '#1f2937' }
+            };
+            Plotly.newPlot('equityChart', [traceEq], layoutEq, { responsive: true, displayModeBar: false });
+
+            // Plotly Drawdown
+            const traceDD = {
+                x: data.equity_curve.dates,
+                y: data.equity_curve.drawdown,
+                fill: 'tozeroy',
+                type: 'scatter',
+                mode: 'none',
+                name: 'Drawdown %',
+                fillcolor: 'rgba(244, 63, 94, 0.3)'
+            };
+            const layoutDD = {
+                plot_bgcolor: '#111827',
+                paper_bgcolor: '#111827',
+                font: { color: '#9ca3af' },
+                margin: { t: 10, r: 20, b: 30, l: 60 },
+                xaxis: { gridcolor: '#1f2937' },
+                yaxis: { title: 'Drawdown (%)', gridcolor: '#1f2937' }
+            };
+            Plotly.newPlot('drawdownChart', [traceDD], layoutDD, { responsive: true, displayModeBar: false });
+
+            // Trades Table & Counter
+            const tbody = document.getElementById('tradeLogBody');
+            tbody.innerHTML = '';
+            lastTradePnls = [];
+
+            const countBadge = document.getElementById('tradesCountBadge');
+            if (countBadge) {
+                countBadge.innerText = `${data.trades.length} Trades Executed`;
+            }
+
+            data.trades.forEach((t, index) => {
+                lastTradePnls.push(t.net_pnl);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="text-secondary font-monospace">${index + 1}</td>
+                    <td class="font-monospace fw-bold text-light">${t.symbol}</td>
+                    <td>${t.entry_time}</td>
+                    <td>${t.exit_time}</td>
+                    <td class="font-monospace">₹${t.entry_price}</td>
+                    <td class="font-monospace">₹${t.exit_price}</td>
+                    <td class="font-monospace">${t.quantity}</td>
+                    <td class="font-monospace text-warning">₹${t.total_costs}</td>
+                    <td class="font-monospace ${t.net_pnl >= 0 ? 'text-success' : 'text-danger'}">₹${t.net_pnl}</td>
+                    <td class="font-monospace ${t.pnl_pct >= 0 ? 'text-success' : 'text-danger'}">${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct}%</td>
+                    <td><span class="badge bg-dark border border-secondary">${t.exit_reason}</span></td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Dynamically refresh Saved Backtest Runs panel
+            await refreshSavedRuns();
+
+        } catch (e) {
+            alert("Execution failed: " + e.message);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle-fill me-1"></i> Run Systematic Backtest';
+        }
+    }
+
+    let allLeaderboardRuns = [];
+    let currentSortField = 'stoxkart_net_pnl';
+
+    function sortLeaderboard(field) {
+        currentSortField = field;
+        
+        ['NetPnl', 'Return', 'Sharpe', 'WinRate', 'Duration'].forEach(b => {
+            const btn = document.getElementById('sortBtn' + b);
+            if (btn) {
+                btn.classList.remove('btn-cyan', 'active');
+                btn.classList.add('btn-outline-secondary');
+            }
+        });
+
+        const activeMap = {
+            'stoxkart_net_pnl': 'sortBtnNetPnl',
+            'net_return_pct': 'sortBtnReturn',
+            'sharpe_ratio': 'sortBtnSharpe',
+            'win_rate_pct': 'sortBtnWinRate',
+            'duration_days': 'sortBtnDuration'
+        };
+        const activeBtn = document.getElementById(activeMap[field]);
+        if (activeBtn) {
+            activeBtn.classList.remove('btn-outline-secondary');
+            activeBtn.classList.add('btn-cyan', 'active');
+        }
+
+        if (!allLeaderboardRuns || allLeaderboardRuns.length === 0) return;
+
+        allLeaderboardRuns.sort((a, b) => {
+            let valA = a[field] ?? 0;
+            let valB = b[field] ?? 0;
+            return valB - valA;
+        });
+
+        renderLeaderboardHtml(allLeaderboardRuns);
+    }
+
+    function renderLeaderboardHtml(runs) {
+        const tbody = document.getElementById('leaderboardBody');
+        if (!tbody) return;
+
+        if (!runs || runs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-muted">No historical simulations found. Run a backtest or batch sweep to populate rankings.</td></tr>';
+            return;
+        }
+
+        let html = '';
+        runs.forEach((run, index) => {
+            const rank = index + 1;
+            let rankBadge = `<span class="badge bg-secondary font-monospace">#${rank}</span>`;
+            if (rank === 1) rankBadge = `<span class="badge bg-warning text-dark fw-bold">🥇 #1</span>`;
+            else if (rank === 2) rankBadge = `<span class="badge bg-light text-dark fw-bold">🥈 #2</span>`;
+            else if (rank === 3) rankBadge = `<span class="badge bg-danger-subtle text-warning fw-bold">🥉 #3</span>`;
+
+            const stratClass = run.strategy === 'gamma_squeeze' ? 'bg-warning-subtle text-warning' : 'bg-info-subtle text-info';
+            const netPnl = Number(run.stoxkart_net_pnl || 0);
+            const grossPnl = Number(run.gross_pnl || 0);
+            const returnPct = Number(run.net_return_pct || 0);
+            const winRate = Number(run.win_rate_pct || 0).toFixed(1);
+            const sharpe = Number(run.sharpe_ratio || 0).toFixed(2);
+            const cap = Number(run.initial_capital || 0).toLocaleString('en-IN', {maximumFractionDigits: 0});
+            const durationStr = run.duration_str || (run.params?.start_date + ' → ' + run.params?.end_date);
+            const deltaLabel = run.delta_label || (run.params?.target_delta ? 'Δ=' + run.params.target_delta : 'Δ=0.35');
+            const tp = run.profit_target_pct ?? run.params?.profit_target_pct ?? 60;
+            const sl = run.stop_loss_pct ?? run.params?.stop_loss_pct ?? 30;
+            const minDte = run.min_dte ?? run.params?.min_dte ?? 2;
+            const maxDte = run.max_dte ?? run.params?.max_dte ?? 20;
+            const cagrText = run.cagr_pct ? `<div class="small text-muted" style="font-size: 0.7rem;">CAGR: ${run.cagr_pct}%/yr</div>` : '';
+
+            html += `
+                <tr>
+                    <td>${rankBadge}</td>
+                    <td>
+                        <div class="fw-bold text-light">
+                            <span class="badge ${stratClass} me-1" style="font-size: 0.65rem;">${run.strategy}</span>
+                            <span class="font-monospace text-secondary">#${run.id}</span>
+                        </div>
+                        <div class="small text-info fw-bold mt-1">${deltaLabel}</div>
+                    </td>
+                    <td>
+                        <div class="small text-light">
+                            <span>Target: <strong class="text-success">${tp}%</strong></span> |
+                            <span>SL: <strong class="text-danger">${sl}%</strong></span>
+                        </div>
+                        <div class="small text-muted mt-1" style="font-size: 0.72rem;">
+                            <span>DTE: ${minDte}-${maxDte}</span> |
+                            <span>Cap: ₹${cap}</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="text-light small font-monospace">${durationStr}</div>
+                        <div class="small text-muted" style="font-size: 0.7rem;">Simulated: ${(run.timestamp || '').slice(0, 16)}</div>
+                    </td>
+                    <td class="text-end">
+                        <div class="fw-bold text-light">${winRate}%</div>
+                        <div class="small text-muted">${run.total_trades} trades</div>
+                    </td>
+                    <td class="text-end font-monospace">
+                        <div class="fw-bold ${returnPct >= 0 ? 'text-success' : 'text-danger'}">${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(1)}%</div>
+                        ${cagrText}
+                    </td>
+                    <td class="text-end font-monospace">
+                        <div class="fw-bold ${netPnl >= 0 ? 'text-success' : 'text-danger'}">${netPnl >= 0 ? '+' : ''}₹${netPnl.toLocaleString('en-IN', {maximumFractionDigits: 0})}</div>
+                        <div class="small text-secondary" style="font-size: 0.7rem;">Gross: ₹${grossPnl.toLocaleString('en-IN', {maximumFractionDigits: 0})}</div>
+                    </td>
+                    <td class="text-end font-monospace text-light fw-bold">${sharpe}</td>
+                    <td class="text-center">
+                        <button type="button" class="btn btn-sm btn-outline-cyan py-1 px-2" style="font-size: 0.72rem;" onclick="loadSavedRun(${run.id})">
+                            <i class="bi bi-box-arrow-in-up-right me-1"></i>Load
+                        </button>
+                    </td>
+                </tr>
+            `;
+        });
+
+        tbody.innerHTML = html;
+    }
+
+    async function refreshSavedRuns() {
+        try {
+            const res = await fetch("{% url 'dashboard:api_backtest_history' %}");
+            const data = await res.json();
+            if (!data.success || !data.runs) return;
+
+            // Update leaderboard data
+            allLeaderboardRuns = [...data.runs];
+            sortLeaderboard(currentSortField);
+
+            const countBadge = document.getElementById('savedRunsCountBadge');
+            if (countBadge) {
+                countBadge.innerText = `${data.runs.length} Runs`;
+            }
+
+            const container = document.getElementById('savedRunsListContainer');
+            if (!container) return;
+
+            if (data.runs.length === 0) {
+                container.innerHTML = '<div class="text-center py-3 text-muted small">No saved backtest runs yet.</div>';
+                return;
+            }
+
+            let html = '';
+            data.runs.forEach(run => {
+                const stratClass = run.strategy === 'gamma_squeeze' ? 'bg-warning-subtle text-warning' : 'bg-info-subtle text-info';
+                const isProfitable = (run.gross_pnl || 0) > 0;
+                const grossClass = isProfitable ? 'text-success' : 'text-danger';
+                const grossSign = isProfitable ? '+' : '';
+                const ts = (run.timestamp || '').slice(0, 16);
+                const initCap = Number(run.initial_capital || 0).toLocaleString('en-IN', {maximumFractionDigits: 0});
+                const grossPnlFormatted = Number(run.gross_pnl || 0).toLocaleString('en-IN', {maximumFractionDigits: 0});
+                const stoxNetFormatted = Number(run.stoxkart_net_pnl || 0).toLocaleString('en-IN', {maximumFractionDigits: 0});
+                const winRate = Number(run.win_rate_pct || 0).toFixed(1);
+                const sharpe = Number(run.sharpe_ratio || 0).toFixed(2);
+
+                html += `
+                    <div class="p-2 mb-2 rounded bg-dark border border-secondary-subtle">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span class="badge bg-secondary font-monospace">#${run.id}</span>
+                            <span class="badge ${stratClass} border border-secondary" style="font-size: 0.65rem;">
+                                ${run.strategy}
+                            </span>
+                            <span class="small text-muted" style="font-size: 0.7rem;">${ts}</span>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-baseline mt-2">
+                            <span class="small text-light">${run.symbol} (₹${initCap})</span>
+                            <span class="font-monospace fw-bold ${grossClass}">
+                                ${grossSign}₹${grossPnlFormatted}
+                            </span>
+                        </div>
+                        <div class="d-flex justify-content-between text-secondary mt-1" style="font-size: 0.72rem;">
+                            <span>Trades: <strong class="text-light">${run.total_trades}</strong></span>
+                            <span>Win: <strong class="text-light">${winRate}%</strong></span>
+                            <span>Sharpe: <strong class="text-light">${sharpe}</strong></span>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center mt-2 pt-1 border-top border-secondary-subtle">
+                            <span class="text-muted" style="font-size: 0.68rem;">Stoxkart: <strong class="text-success">₹${stoxNetFormatted}</strong></span>
+                            <button type="button" class="btn btn-sm btn-outline-cyan py-0 px-2" style="font-size: 0.7rem;" onclick="loadSavedRun(${run.id})">
+                                Load Run
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+        } catch (e) {
+            console.error("Error refreshing saved runs:", e);
+        }
+    }
+
+    // Auto-initialize leaderboard on DOM load
+    document.addEventListener('DOMContentLoaded', () => {
+        refreshSavedRuns();
+    });
+
+    function setDatePreset(start, end) {
+        document.getElementById('startDateInput').value = start;
+        document.getElementById('endDateInput').value = end;
+    }
+
+    function sendToMonteCarlo() {
+        if (lastTradePnls.length === 0) {
+            alert("No trades to simulate.");
+            return;
+        }
+        localStorage.setItem("studytrade_trades", JSON.stringify(lastTradePnls));
+        window.location.href = "{% url 'dashboard:analytics' %}";
+    }
+
+    async function loadSavedRun(runId) {
+        try {
+            const res = await fetch(`/api/backtest-run/${runId}/`);
+            const data = await res.json();
+            if (!data.success) {
+                alert(data.error);
+                return;
+            }
+            const run = data.run;
+            if (run.params) {
+                if (run.params.strategy && document.getElementById('stratSelect')) document.getElementById('stratSelect').value = run.params.strategy;
+                if (run.params.symbol && document.getElementById('symSelect')) document.getElementById('symSelect').value = run.params.symbol;
+                if (run.params.start_date && document.getElementById('startDateInput')) document.getElementById('startDateInput').value = run.params.start_date;
+                if (run.params.end_date && document.getElementById('endDateInput')) document.getElementById('endDateInput').value = run.params.end_date;
+                if (run.params.initial_capital && document.getElementById('capitalInput')) document.getElementById('capitalInput').value = run.params.initial_capital;
+                if (run.params.target_delta && document.getElementById('deltaSelect')) document.getElementById('deltaSelect').value = run.params.target_delta;
+                if (run.params.stop_loss_pct && document.getElementById('slInput')) document.getElementById('slInput').value = run.params.stop_loss_pct;
+                if (run.params.profit_target_pct && document.getElementById('targetInput')) document.getElementById('targetInput').value = run.params.profit_target_pct;
+            }
+            const placeholder = document.getElementById('resultsPlaceholder');
+            const container = document.getElementById('resultsContainer');
+            placeholder.style.display = 'none';
+            container.style.display = 'block';
+
+            document.getElementById('metricTrades').innerText = run.total_trades + ' trades executed';
+            document.getElementById('metricWinRate').innerText = run.win_rate_pct.toFixed(1) + '%';
+            document.getElementById('metricSharpe').innerText = run.sharpe_ratio.toFixed(2);
+            document.getElementById('metricMaxDD').innerText = 'Max DD: -' + run.max_drawdown_pct.toFixed(2) + '%';
+            document.getElementById('metricGrossPnl').innerText = 'Gross Realized: ₹' + run.gross_pnl.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('metricNetPnl').innerHTML = `Net Realized: <span class="text-success">₹${run.stoxkart_net_pnl.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span> <span class="text-muted fw-normal" style="font-size:0.75rem;">(Stoxkart)</span> | <span class="text-light">₹${run.zerodha_net_pnl.toLocaleString('en-IN', {minimumFractionDigits: 2})}</span> <span class="text-muted fw-normal" style="font-size:0.75rem;">(Zerodha)</span>`;
+
+            const netRet = ((run.stoxkart_net_pnl / run.initial_capital) * 100).toFixed(1);
+            document.getElementById('metricReturn').innerText = (netRet >= 0 ? '+' : '') + netRet + '%';
+            document.getElementById('metricReturn').className = netRet >= 0 ? 'stat-val text-success' : 'stat-val text-danger';
+
+            // Main inline broker comparison cards
+            const zBrokVal = run.total_trades * 40;
+            const zStatVal = Math.max(0, run.zerodha_charges - zBrokVal);
+            document.getElementById('zBrok').innerText = '₹' + zBrokVal.toLocaleString('en-IN', {minimumFractionDigits: 0});
+            document.getElementById('zStat').innerText = '₹' + zStatVal.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('zTotal').innerText = '₹' + run.zerodha_charges.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('zNet').innerText = '₹' + run.zerodha_net_pnl.toLocaleString('en-IN', {minimumFractionDigits: 2});
+
+            document.getElementById('aBrok').innerText = '₹' + zBrokVal.toLocaleString('en-IN', {minimumFractionDigits: 0});
+            document.getElementById('aStat').innerText = '₹' + zStatVal.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('aTotal').innerText = '₹' + run.angel_charges.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('aNet').innerText = '₹' + run.angel_net_pnl.toLocaleString('en-IN', {minimumFractionDigits: 2});
+
+            const sWins = Math.round(run.total_trades * (run.win_rate_pct / 100));
+            const sBrokVal = sWins * 30;
+            const sStatVal = Math.max(0, run.stoxkart_charges - sBrokVal);
+            document.getElementById('sBrok').innerText = '₹' + sBrokVal.toLocaleString('en-IN', {minimumFractionDigits: 0});
+            document.getElementById('sStat').innerText = '₹' + sStatVal.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('sTotal').innerText = '₹' + run.stoxkart_charges.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('sNet').innerText = '₹' + run.stoxkart_net_pnl.toLocaleString('en-IN', {minimumFractionDigits: 2});
+
+            const savings = Math.max(0, run.stoxkart_net_pnl - run.zerodha_net_pnl);
+            document.getElementById('sSavings').innerText = '+₹' + savings.toLocaleString('en-IN', {minimumFractionDigits: 2});
+
+            // Hover tooltip cards
+            document.getElementById('hZBrok').innerText = '₹' + zBrokVal.toLocaleString();
+            document.getElementById('hZTot').innerText = '₹' + run.zerodha_charges.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('hZNet').innerText = '₹' + run.zerodha_net_pnl.toLocaleString('en-IN', {minimumFractionDigits: 2});
+
+            document.getElementById('hABrok').innerText = '₹' + zBrokVal.toLocaleString();
+            document.getElementById('hATot').innerText = '₹' + run.angel_charges.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('hANet').innerText = '₹' + run.angel_net_pnl.toLocaleString('en-IN', {minimumFractionDigits: 2});
+
+            document.getElementById('hSBrok').innerText = '₹' + sBrokVal.toLocaleString();
+            document.getElementById('hSTot').innerText = '₹' + run.stoxkart_charges.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('hSNet').innerText = '₹' + run.stoxkart_net_pnl.toLocaleString('en-IN', {minimumFractionDigits: 2});
+            document.getElementById('hoverSavings').innerText = '₹' + savings.toLocaleString('en-IN', {minimumFractionDigits: 2});
+
+            document.getElementById('tradesCountBadge').innerText = run.total_trades + ' Trades (Loaded Run #' + run.id + ')';
+            window.scrollTo({ top: container.offsetTop - 20, behavior: 'smooth' });
+        } catch (e) {
+            console.error("Error loading run:", e);
+        }
+    }
+</script>
+{% endblock %}

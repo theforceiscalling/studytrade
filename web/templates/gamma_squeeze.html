@@ -1,0 +1,1047 @@
+{% extends "base.html" %}
+
+{% block title %}Gamma Squeeze & GEX Cockpit — StudyTrade{% endblock %}
+
+{% block content %}
+<!-- Top Header & Controls -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-3">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+                <div>
+                    <h4 class="fw-bold mb-1">
+                        <i class="bi bi-lightning-charge-fill text-warning me-2"></i>Options Gamma Squeeze & Dealer GEX Cockpit
+                    </h4>
+                    <p class="small text-secondary mb-0">
+                        Visualizing Market Maker Gamma Positioning, Call/Put Walls, Gamma Flip, and Dealer Delta Hedging Cascades.
+                    </p>
+                </div>
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                    <!-- Symbol Selector -->
+                    <div class="btn-group" role="group">
+                        {% for sym in symbols %}
+                            <a href="?symbol={{ sym }}&date={{ selected_date }}" 
+                               class="btn btn-sm {% if sym == symbol %}btn-cyan{% else %}btn-outline-secondary{% endif %}">
+                                {{ sym }}
+                            </a>
+                        {% endfor %}
+                    </div>
+                    <!-- Date Selector -->
+                    <form method="GET" class="d-flex align-items-center gap-2">
+                        <input type="hidden" name="symbol" value="{{ symbol }}">
+                        <select name="date" class="form-select form-select-sm bg-dark border-secondary text-light" onchange="this.form.submit()">
+                            {% for d in dates %}
+                                <option value="{{ d }}" {% if d == selected_date %}selected{% endif %}>{{ d }}</option>
+                            {% endfor %}
+                        </select>
+                        {% if expiries %}
+                            <select name="expiry" class="form-select form-select-sm bg-dark border-secondary text-light" onchange="this.form.submit()">
+                                {% for e in expiries %}
+                                    <option value="{{ e }}" {% if e == selected_expiry %}selected{% endif %}>Exp: {{ e }}</option>
+                                {% endfor %}
+                            </select>
+                        {% endif %}
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Primary GEX Metric KPI Cards -->
+<div class="row g-3 mb-4">
+    <!-- Regime Badge Card -->
+    <div class="col-md-3">
+        <div class="stat-card h-100">
+            <div class="stat-label">Market Gamma Regime</div>
+            <div id="regimeBadge" class="mt-2">
+                {% if is_negative_gamma %}
+                    <span class="badge bg-danger-subtle text-danger border border-danger p-2 fs-6">
+                        <i class="bi bi-exclamation-triangle-fill me-1"></i> Negative Gamma (Squeeze Zone)
+                    </span>
+                    <div class="small text-muted mt-2">Dealers hedge pro-cyclically: Volatility accelerator</div>
+                {% else %}
+                    <span class="badge bg-success-subtle text-success border border-success p-2 fs-6">
+                        <i class="bi bi-shield-check me-1"></i> Positive Gamma (Stable)
+                    </span>
+                    <div class="small text-muted mt-2">Dealers sell rips & buy dips: Volatility dampener</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Call Wall Card -->
+    <div class="col-md-3">
+        <div class="stat-card h-100">
+            <div class="stat-label"><i class="bi bi-shield-shaded text-warning me-1"></i>Call Wall (Squeeze Barrier)</div>
+            <div class="d-flex align-items-baseline gap-2">
+                <div id="callWallVal" class="stat-val text-warning">{{ call_wall|floatformat:0 }}</div>
+                <span id="callDistBadge" class="badge bg-dark border border-warning text-warning small">
+                    {{ call_dist_pts|floatformat:1 }} pts ({{ call_dist_pct }}%)
+                </span>
+            </div>
+            <div class="small text-muted mt-1">Breakout above forces dealer call delta buy-hedging</div>
+        </div>
+    </div>
+
+    <!-- Put Wall Card -->
+    <div class="col-md-3">
+        <div class="stat-card h-100">
+            <div class="stat-label"><i class="bi bi-shield-fill text-danger me-1"></i>Put Wall (Cascade Floor)</div>
+            <div class="d-flex align-items-baseline gap-2">
+                <div id="putWallVal" class="stat-val text-danger">{{ put_wall|floatformat:0 }}</div>
+                <span id="putDistBadge" class="badge bg-dark border border-danger text-danger small">
+                    {{ put_dist_pts|floatformat:1 }} pts ({{ put_dist_pct }}%)
+                </span>
+            </div>
+            <div class="small text-muted mt-1">Breakdown below triggers forced dealer put liquidations</div>
+        </div>
+    </div>
+
+    <!-- Gamma Flip & Net GEX Card -->
+    <div class="col-md-3">
+        <div class="stat-card h-100">
+            <div class="stat-label"><i class="bi bi-arrow-left-right text-info me-1"></i>Gamma Flip Level</div>
+            <div id="gammaFlipVal" class="stat-val text-info">{{ gamma_flip|floatformat:0 }}</div>
+            <div class="small text-muted mt-1">
+                Net GEX: <strong id="netGexVal" class="{% if net_gex_lakhs < 0 %}text-danger{% else %}text-success{% endif %}">₹{{ net_gex_lakhs }}L</strong> per 1% spot move
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Chart & Squeeze Cockpit Row -->
+<div class="row g-4 mb-4">
+    <!-- Interactive GEX Profile Chart (Plotly) -->
+    <div class="col-lg-8">
+        <div class="card-custom p-4 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h5 class="fw-bold mb-0 text-light">
+                    <i class="bi bi-bar-chart-steps text-info me-2"></i>Option Strike Gamma Exposure (GEX) Profile
+                </h5>
+                <span class="badge bg-dark border border-secondary text-secondary">₹ Lakhs per 1% Spot Move</span>
+            </div>
+            
+            <div id="gexChart" style="height: 420px;"></div>
+
+            <!-- Interactive What-If Spot Slider -->
+            <div class="mt-3 p-3 rounded bg-dark border border-secondary">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="form-label small fw-bold text-light mb-0">
+                        <i class="bi bi-sliders text-cyan me-1"></i>Interactive Spot Price "What-If" Squeeze Simulator
+                    </label>
+                    <span class="badge bg-cyan text-dark font-monospace fs-6">
+                        Simulated Spot: <strong id="simSpotDisplay">{{ spot_price|floatformat:1 }}</strong>
+                    </span>
+                </div>
+                <div class="d-flex align-items-center gap-3">
+                    <span class="small text-muted font-monospace" id="sliderMinLabel">-3%</span>
+                    <input type="range" class="form-range" id="spotRangeSlider" 
+                           min="{{ spot_price|add:'-600' }}" max="{{ spot_price|add:'600' }}" 
+                           step="10" value="{{ spot_price }}" 
+                           oninput="onSpotSliderInput(this.value)">
+                    <span class="small text-muted font-monospace" id="sliderMaxLabel">+3%</span>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="resetSpotSlider({{ spot_price }})">Reset</button>
+                </div>
+                <div class="small text-secondary mt-1">
+                    Drag the slider to test how dealer delta-hedging pressure and squeeze scores evolve as the spot price moves toward the Call Wall or Put Wall.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Squeeze Risk Thermometer & Live Signals -->
+    <div class="col-lg-4">
+        <div class="card-custom p-4 h-100 d-flex flex-column justify-content-between">
+            <div>
+                <h5 class="fw-bold mb-3 text-light">
+                    <i class="bi bi-speedometer text-warning me-2"></i>Squeeze Vulnerability Index
+                </h5>
+
+                <!-- Bullish Squeeze Meter -->
+                <div class="mb-4">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="small fw-bold text-light"><i class="bi bi-arrow-up-circle-fill text-success me-1"></i>Bullish Call Squeeze Risk</span>
+                        <span id="callScoreVal" class="fw-bold font-monospace fs-5 {% if call_squeeze_score >= 65 %}text-danger{% elif call_squeeze_score >= 40 %}text-warning{% else %}text-success{% endif %}">
+                            {{ call_squeeze_score|floatformat:0 }}<span class="small text-muted">/100</span>
+                        </span>
+                    </div>
+                    <div class="progress bg-dark border border-secondary" style="height: 12px;">
+                        <div id="callScoreBar" class="progress-bar {% if call_squeeze_score >= 65 %}bg-danger{% elif call_squeeze_score >= 40 %}bg-warning{% else %}bg-success{% endif %}" 
+                             role="progressbar" style="width: {{ call_squeeze_score }}%;"></div>
+                    </div>
+                    <div id="callScoreDesc" class="small text-muted mt-1">
+                        {% if call_squeeze_score >= 65 %}⚠️ Extreme Call Gamma Squeeze Alert{% elif call_squeeze_score >= 40 %}Moderate Upward Gamma Pressure{% else %}Stable / Below Squeeze Barrier{% endif %}
+                    </div>
+                </div>
+
+                <!-- Bearish Cascade Meter -->
+                <div class="mb-4">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="small fw-bold text-light"><i class="bi bi-arrow-down-circle-fill text-danger me-1"></i>Bearish Put Cascade Risk</span>
+                        <span id="putScoreVal" class="fw-bold font-monospace fs-5 {% if put_cascade_score >= 65 %}text-danger{% elif put_cascade_score >= 40 %}text-warning{% else %}text-success{% endif %}">
+                            {{ put_cascade_score|floatformat:0 }}<span class="small text-muted">/100</span>
+                        </span>
+                    </div>
+                    <div class="progress bg-dark border border-secondary" style="height: 12px;">
+                        <div id="putScoreBar" class="progress-bar {% if put_cascade_score >= 65 %}bg-danger{% elif put_cascade_score >= 40 %}bg-warning{% else %}bg-secondary{% endif %}" 
+                             role="progressbar" style="width: {{ put_cascade_score }}%;"></div>
+                    </div>
+                    <div id="putScoreDesc" class="small text-muted mt-1">
+                        {% if put_cascade_score >= 65 %}⚠️ High Put Liquidation Cascade Risk{% elif put_cascade_score >= 40 %}Elevated Downside Pressure{% else %}Put Wall Floor Intact{% endif %}
+                    </div>
+                </div>
+
+                <hr class="border-secondary my-3">
+
+                <!-- Active Systematic Signals Header -->
+                <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+                    <div>
+                        <h6 class="fw-bold text-light mb-0"><i class="bi bi-cpu text-info me-2"></i>Real-Time Strategy Signals</h6>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <!-- Single click Recalibrate Signal -->
+                        <button class="btn btn-sm btn-cyan fw-bold py-1 px-2 shadow-sm" id="btnQuickRecalibrate" onclick="recalibrateSignal(this)" title="Recalibrate scanner with top-ranked backtest settings in 1-click">
+                            <i class="bi bi-lightning-charge-fill me-1"></i>Recalibrate Signal
+                        </button>
+                        <!-- Customise Signal Settings Button -->
+                        <button class="btn btn-sm btn-outline-info py-1 px-2" data-bs-toggle="modal" data-bs-target="#customiseSignalModal" title="Open and customize Delta, Profit Target, SL, and Thresholds">
+                            <i class="bi bi-sliders me-1"></i>Customise
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Backtest Rank Selector -->
+                <div class="p-2 mb-3 rounded bg-dark border border-secondary-subtle">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="small text-muted" style="font-size: 0.72rem;"><i class="bi bi-trophy-fill text-warning me-1"></i>Calibrate as per Backtest Rank:</span>
+                        <span class="small font-monospace text-cyan" id="activePresetBadge" style="font-size: 0.72rem;">
+                            {% if ranks %}{{ ranks.0.title }}{% else %}Rank #1: Directional OTM (Δ=0.35, TP +90%){% endif %}
+                        </span>
+                    </div>
+
+                    <!-- Dynamic Rank Selector Dropdown -->
+                    <select class="form-select form-select-sm bg-black text-light font-monospace mb-2" id="strategyRankSelect" onchange="onRankSelect(this)">
+                        {% for r in ranks %}
+                        <option value="{{ r.rank }}" 
+                                data-delta="{{ r.target_delta }}" 
+                                data-tp="{{ r.profit_target_pct }}" 
+                                data-sl="{{ r.stop_loss_pct }}" 
+                                data-desc="{{ r.title }}"
+                                {% if r.target_delta == target_delta and r.profit_target_pct == profit_target_pct %}selected{% elif forloop.first and not target_delta %}selected{% endif %}>
+                            {{ r.label }}: {{ r.symbol }} [Δ={{ r.target_delta }}, TP +{{ r.profit_target_pct|floatformat:0 }}%, Sharpe: {{ r.sharpe_ratio }}]
+                        </option>
+                        {% endfor %}
+                    </select>
+
+                    <div class="btn-group w-100" role="group">
+                        {% for r in ranks|slice:":3" %}
+                        <button type="button" class="btn btn-sm {% if r.target_delta == target_delta %}btn-cyan active{% else %}btn-outline-secondary{% endif %} py-1 text-truncate" 
+                                id="presetRankBtn{{ r.rank }}" 
+                                onclick="applyRankPreset({{ r.target_delta }}, {{ r.profit_target_pct }}, {{ r.stop_loss_pct }}, '{{ r.title }}', {{ r.rank }})">
+                            {{ r.label }}
+                        </button>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div id="signalsContainer">
+                    {% if signals %}
+                        {% for sig in signals %}
+                            <div class="p-3 mb-3 rounded bg-dark border {% if 'CALL' in sig.direction %}border-success{% else %}border-danger{% endif %} shadow-sm">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="badge {% if 'CALL' in sig.direction %}bg-success{% else %}bg-danger{% endif %} fs-6">
+                                        <i class="bi {% if 'CALL' in sig.direction %}bi-arrow-up-right-circle{% else %}bi-arrow-down-right-circle{% endif %} me-1"></i>{{ sig.direction }}
+                                    </span>
+                                    <span class="badge bg-secondary-subtle text-light border border-secondary">Confidence: {{ sig.strength }}%</span>
+                                </div>
+                                <div class="small text-light mt-2"><strong>Trigger Reason:</strong> {{ sig.reason }}</div>
+
+                                {% if sig.recommendation %}
+                                <!-- Manual Trading Strike Recommendation Box -->
+                                <div class="mt-3 p-2 rounded bg-black border border-warning">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="text-warning fw-bold small">
+                                            <i class="bi bi-bullseye me-1"></i>Manual Trade Strike:
+                                        </span>
+                                        <span class="badge bg-warning text-dark fw-bold fs-6">
+                                            {{ sig.recommendation.strike|floatformat:0 }} {% if 'CALL' in sig.direction %}CE{% else %}PE{% endif %}
+                                        </span>
+                                    </div>
+                                    <div class="small text-light">
+                                        Contract: <code class="text-info">{{ sig.recommendation.contract_symbol }}</code> 
+                                        &bull; LTP: <strong>₹{{ sig.recommendation.premium }}</strong> 
+                                        &bull; Delta: <strong>{{ sig.recommendation.delta }}</strong>
+                                    </div>
+                                    <div class="d-flex justify-content-between text-secondary mt-2 pt-1 border-top border-secondary small" style="font-size: 0.76rem;">
+                                        <span>🎯 Target (+{{ sig.recommendation.profit_target_pct|floatformat:0 }}%): <strong class="text-success">₹{{ sig.recommendation.target_price }}</strong></span>
+                                        <span>🛑 Stop Loss (-{{ sig.recommendation.stop_loss_pct|floatformat:0 }}%): <strong class="text-danger">₹{{ sig.recommendation.stop_loss_price }}</strong></span>
+                                        <span>💵 Capital/Lot: <strong class="text-light">₹{{ sig.recommendation.capital_per_lot }}</strong></span>
+                                    </div>
+                                    <button class="btn btn-sm btn-success fw-bold w-100 mt-2 btn-buy-paper-gs" 
+                                            data-symbol="{{ sig.recommendation.contract_symbol }}"
+                                            data-underlying="{{ symbol }}"
+                                            data-strike="{{ sig.recommendation.strike }}"
+                                            data-expiry="{{ selected_expiry }}"
+                                            data-option-type="{% if 'CALL' in sig.direction %}CE{% else %}PE{% endif %}"
+                                            data-price="{{ sig.recommendation.ask|default:sig.recommendation.premium }}"
+                                            data-lot-size="{{ sig.recommendation.lot_size }}"
+                                            data-target="{{ sig.recommendation.target_price }}"
+                                            data-stop="{{ sig.recommendation.stop_loss_price }}"
+                                            onclick="buyFromGammaSqueeze(this)">
+                                        <i class="bi bi-cart-plus me-1"></i> Buy in Paper Cockpit
+                                    </button>
+                                </div>
+                                {% endif %}
+
+                                <div class="small text-secondary mt-2" style="font-size: 0.72rem;">Target Delta: <strong>{{ sig.target_delta }}</strong> | Expiry Horizon: <strong>{{ sig.min_dte }}-{{ sig.max_dte }} DTE</strong></div>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="p-3 text-center rounded bg-dark border border-secondary text-muted small">
+                            <i class="bi bi-check2-circle text-success fs-5 d-block mb-1"></i>
+                            No active squeeze triggers at current price. Market is within normal dealer hedging boundaries.
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Backtest CTA Button -->
+            <div class="mt-3">
+                <a href="{% url 'dashboard:backtest' %}?strategy=gamma_squeeze&symbol={{ symbol }}" class="btn btn-outline-info w-100 py-2">
+                    <i class="bi bi-play-circle me-1"></i> Run Full Gamma Squeeze Backtest
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Strike Ladder Microstructure Table -->
+<div class="row g-4">
+    <div class="col-12">
+        <div class="card-custom p-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="fw-bold mb-0 text-light">
+                    <i class="bi bi-table text-info me-2"></i>Contract-Level GEX & Open Interest Ladder
+                </h5>
+                <span class="badge bg-dark border border-secondary text-muted">Point-in-Time Chain Snapshot</span>
+            </div>
+            
+            <div class="table-responsive" style="max-height: 480px; overflow-y: auto;">
+                <table class="table table-custom table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th>Moneyness</th>
+                            <th>Call OI</th>
+                            <th>Call Volume</th>
+                            <th class="text-success">Call GEX (₹L)</th>
+                            <th class="text-center bg-dark text-info fs-6">Strike Price</th>
+                            <th class="text-danger">Put GEX (₹L)</th>
+                            <th>Put Volume</th>
+                            <th>Put OI</th>
+                            <th>Net GEX (₹L)</th>
+                            <th>Structural Role</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ladderTableBody">
+                        {% for r in chain_rows %}
+                            <tr class="{% if 'Call Wall' in r.tags %}table-warning text-dark{% elif 'Put Wall' in r.tags %}table-danger text-dark{% elif 'ATM Strike' in r.tags %}table-info text-dark{% endif %}">
+                                <td class="font-monospace small">{{ r.moneyness_pct }}%</td>
+                                <td class="font-monospace">{{ r.call_oi }}</td>
+                                <td class="font-monospace text-muted">{{ r.call_volume }}</td>
+                                <td class="font-monospace fw-bold text-success">+{{ r.call_gex_lakhs }}</td>
+                                <td class="text-center font-monospace fw-bold fs-6">{{ r.strike|floatformat:0 }}</td>
+                                <td class="font-monospace fw-bold text-danger">{{ r.put_gex_lakhs }}</td>
+                                <td class="font-monospace text-muted">{{ r.put_volume }}</td>
+                                <td class="font-monospace">{{ r.put_oi }}</td>
+                                <td class="font-monospace fw-bold {% if r.net_gex_lakhs < 0 %}text-danger{% else %}text-success{% endif %}">
+                                    {{ r.net_gex_lakhs }}
+                                </td>
+                                <td>
+                                    {% for tag in r.tags %}
+                                        <span class="badge {% if tag == 'Call Wall' %}bg-warning text-dark{% elif tag == 'Put Wall' %}bg-danger{% else %}bg-info text-dark{% endif %} me-1">
+                                            {{ tag }}
+                                        </span>
+                                    {% empty %}
+                                        <span class="text-muted small">—</span>
+                                    {% endfor %}
+                                </td>
+                            </tr>
+                        {% empty %}
+                            <tr>
+                                <td colspan="10" class="text-center py-4 text-muted">No option chain data available for this date.</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const chartJson = {{ chart_json|safe }};
+    const currentSymbol = "{{ symbol }}";
+    const selectedDate = "{{ selected_date }}";
+    const selectedExpiry = "{{ selected_expiry }}";
+    let baseSpot = {{ spot_price|default:0 }};
+
+    function renderGexChart(data) {
+        if (!data || !data.strikes || data.strikes.length === 0) return;
+
+        const strikes = data.strikes;
+        const callGex = data.call_gex;
+        const putGex = data.put_gex;
+        const netGex = data.net_gex;
+        const spot = data.spot_price;
+        const callWall = data.call_wall;
+        const putWall = data.put_wall;
+        const flip = data.gamma_flip;
+
+        // Traces
+        const traceCalls = {
+            x: strikes,
+            y: callGex,
+            name: 'Call GEX (+Dealer Buy)',
+            type: 'bar',
+            marker: { color: 'rgba(16, 185, 129, 0.75)' }
+        };
+
+        const tracePuts = {
+            x: strikes,
+            y: putGex,
+            name: 'Put GEX (-Dealer Sell)',
+            type: 'bar',
+            marker: { color: 'rgba(244, 63, 94, 0.75)' }
+        };
+
+        const traceNet = {
+            x: strikes,
+            y: netGex,
+            name: 'Net GEX',
+            type: 'scatter',
+            mode: 'lines+markers',
+            line: { color: '#06b6d4', width: 2.5 },
+            marker: { size: 4, color: '#06b6d4' }
+        };
+
+        // Layout vertical lines
+        const shapes = [
+            // Spot line (Cyan)
+            {
+                type: 'line',
+                x0: spot, x1: spot,
+                y0: 0, y1: 1, yref: 'paper',
+                line: { color: '#38bdf8', width: 2.5, dash: 'solid' }
+            },
+            // Call Wall (Yellow)
+            {
+                type: 'line',
+                x0: callWall, x1: callWall,
+                y0: 0, y1: 1, yref: 'paper',
+                line: { color: '#f59e0b', width: 2, dash: 'dash' }
+            },
+            // Put Wall (Red)
+            {
+                type: 'line',
+                x0: putWall, x1: putWall,
+                y0: 0, y1: 1, yref: 'paper',
+                line: { color: '#ef4444', width: 2, dash: 'dash' }
+            },
+            // Gamma Flip (Purple)
+            {
+                type: 'line',
+                x0: flip, x1: flip,
+                y0: 0, y1: 1, yref: 'paper',
+                line: { color: '#a855f7', width: 2, dash: 'dot' }
+            }
+        ];
+
+        const annotations = [
+            {
+                x: spot, y: 1, yref: 'paper',
+                text: `Spot: ${spot.toFixed(0)}`,
+                showarrow: true, arrowhead: 2, arrowcolor: '#38bdf8',
+                font: { color: '#38bdf8', size: 11 },
+                bgcolor: 'rgba(15, 23, 42, 0.85)', bordercolor: '#38bdf8'
+            },
+            {
+                x: callWall, y: 0.9, yref: 'paper',
+                text: `Call Wall: ${callWall.toFixed(0)}`,
+                showarrow: true, arrowhead: 2, arrowcolor: '#f59e0b',
+                font: { color: '#f59e0b', size: 10 },
+                bgcolor: 'rgba(15, 23, 42, 0.85)', bordercolor: '#f59e0b'
+            },
+            {
+                x: putWall, y: 0.9, yref: 'paper',
+                text: `Put Wall: ${putWall.toFixed(0)}`,
+                showarrow: true, arrowhead: 2, arrowcolor: '#ef4444',
+                font: { color: '#ef4444', size: 10 },
+                bgcolor: 'rgba(15, 23, 42, 0.85)', bordercolor: '#ef4444'
+            },
+            {
+                x: flip, y: 0.75, yref: 'paper',
+                text: `Flip: ${flip.toFixed(0)}`,
+                showarrow: true, arrowhead: 2, arrowcolor: '#a855f7',
+                font: { color: '#a855f7', size: 10 },
+                bgcolor: 'rgba(15, 23, 42, 0.85)', bordercolor: '#a855f7'
+            }
+        ];
+
+        const layout = {
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            barmode: 'relative',
+            margin: { t: 30, b: 40, l: 50, r: 20 },
+            legend: { orientation: 'h', y: -0.18, font: { color: '#9ca3af', size: 11 } },
+            xaxis: {
+                title: 'Strike Price',
+                gridcolor: '#1f2937',
+                tickfont: { color: '#9ca3af' },
+                titlefont: { color: '#9ca3af' }
+            },
+            yaxis: {
+                title: 'Rupee GEX (₹ Lakhs / 1%)',
+                gridcolor: '#1f2937',
+                tickfont: { color: '#9ca3af' },
+                titlefont: { color: '#9ca3af' },
+                zerolinecolor: '#374151',
+                zerolinewidth: 2
+            },
+            shapes: shapes,
+            annotations: annotations
+        };
+
+        const config = { responsive: true, displayModeBar: false };
+        Plotly.newPlot('gexChart', [traceCalls, tracePuts, traceNet], layout, config);
+    }
+
+    // Initialize Plotly chart on load
+    if (chartJson && chartJson.strikes) {
+        renderGexChart(chartJson);
+    }
+
+    // Dynamic slider handler
+    let debounceTimer = null;
+    function onSpotSliderInput(val) {
+        const spotVal = parseFloat(val);
+        document.getElementById('simSpotDisplay').innerText = spotVal.toFixed(1);
+
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+            updateSimulatedGex(spotVal);
+        }, 80);
+    }
+
+    function resetSpotSlider(origSpot) {
+        document.getElementById('spotRangeSlider').value = origSpot;
+        document.getElementById('simSpotDisplay').innerText = origSpot.toFixed(1);
+        updateSimulatedGex(origSpot);
+    }
+
+    async function updateSimulatedGex(simSpot) {
+        try {
+            const url = `{% url 'dashboard:api_gamma_profile' %}?symbol=${currentSymbol}&date=${selectedDate}&expiry=${selectedExpiry}&sim_spot=${simSpot}`;
+            const res = await fetch(url);
+            const data = await res.json();
+            if (!data.success) return;
+
+            // Re-render Plotly chart with simulated spot
+            renderGexChart(data.chart_data);
+
+            // Update KPI cards
+            document.getElementById('callWallVal').innerText = Math.round(data.call_wall);
+            document.getElementById('putWallVal').innerText = Math.round(data.put_wall);
+            document.getElementById('gammaFlipVal').innerText = Math.round(data.gamma_flip);
+            document.getElementById('netGexVal').innerText = `₹${data.net_gex_lakhs}L`;
+            document.getElementById('callDistBadge').innerText = `${data.call_dist_pts} pts (${data.call_dist_pct}%)`;
+            document.getElementById('putDistBadge').innerText = `${data.put_dist_pts} pts (${data.put_dist_pct}%)`;
+
+            // Update Regime Badge
+            const regimeBadge = document.getElementById('regimeBadge');
+            if (data.is_negative_gamma) {
+                regimeBadge.innerHTML = `
+                    <span class="badge bg-danger-subtle text-danger border border-danger p-2 fs-6">
+                        <i class="bi bi-exclamation-triangle-fill me-1"></i> Negative Gamma (Squeeze Zone)
+                    </span>
+                    <div class="small text-muted mt-2">Dealers hedge pro-cyclically: Volatility accelerator</div>
+                `;
+            } else {
+                regimeBadge.innerHTML = `
+                    <span class="badge bg-success-subtle text-success border border-success p-2 fs-6">
+                        <i class="bi bi-shield-check me-1"></i> Positive Gamma (Stable)
+                    </span>
+                    <div class="small text-muted mt-2">Dealers sell rips & buy dips: Volatility dampener</div>
+                `;
+            }
+
+            // Update Squeeze scores & progress bars
+            const cScore = Math.round(data.call_squeeze_score);
+            const pScore = Math.round(data.put_cascade_score);
+            
+            document.getElementById('callScoreVal').innerHTML = `${cScore}<span class="small text-muted">/100</span>`;
+            document.getElementById('putScoreVal').innerHTML = `${pScore}<span class="small text-muted">/100</span>`;
+            
+            const callBar = document.getElementById('callScoreBar');
+            callBar.style.width = `${cScore}%`;
+            callBar.className = `progress-bar ${cScore >= 65 ? 'bg-danger' : (cScore >= 40 ? 'bg-warning' : 'bg-success')}`;
+
+            const putBar = document.getElementById('putScoreBar');
+            putBar.style.width = `${pScore}%`;
+            putBar.className = `progress-bar ${pScore >= 65 ? 'bg-danger' : (pScore >= 40 ? 'bg-warning' : 'bg-secondary')}`;
+
+            // Check dynamic strategy signals
+            refreshStrategySignals(simSpot);
+        } catch (e) {
+            console.error("Failed to update simulated GEX:", e);
+        }
+    }
+
+    let currentTargetDelta = {{ target_delta|default:0.35 }};
+    let currentProfitTarget = {{ profit_target_pct|default:50.0 }};
+    let currentStopLoss = {{ stop_loss_pct|default:30.0 }};
+
+    function applyStrategyPreset(delta, tp, sl, label) {
+        currentTargetDelta = delta;
+        currentProfitTarget = tp;
+        currentStopLoss = sl;
+
+        const badge = document.getElementById('activePresetBadge');
+        if (badge) badge.innerText = label;
+
+        ['presetAtmBtn', 'presetDirBtn', 'presetFarBtn'].forEach(id => {
+            const btn = document.getElementById(id);
+            if (btn) {
+                btn.classList.remove('btn-cyan', 'active');
+                btn.classList.add('btn-outline-secondary');
+            }
+        });
+
+        if (delta === 0.50) {
+            const b = document.getElementById('presetAtmBtn');
+            if (b) { b.classList.remove('btn-outline-secondary'); b.classList.add('btn-cyan', 'active'); }
+        } else if (delta === 0.35) {
+            const b = document.getElementById('presetDirBtn');
+            if (b) { b.classList.remove('btn-outline-secondary'); b.classList.add('btn-cyan', 'active'); }
+        } else if (delta === 0.25) {
+            const b = document.getElementById('presetFarBtn');
+            if (b) { b.classList.remove('btn-outline-secondary'); b.classList.add('btn-cyan', 'active'); }
+        }
+
+        const slider = document.getElementById('spotRangeSlider');
+        const curSpot = slider ? parseFloat(slider.value) : currentSpot;
+        refreshStrategySignals(curSpot);
+    }
+
+    async function refreshStrategySignals(simSpot) {
+        try {
+            const url = `{% url 'dashboard:api_run_gamma_strategy' %}`;
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    symbol: currentSymbol,
+                    date: selectedDate,
+                    expiry: selectedExpiry,
+                    threshold: 50.0,
+                    target_delta: currentTargetDelta,
+                    profit_target_pct: currentProfitTarget,
+                    stop_loss_pct: currentStopLoss,
+                    sim_spot: simSpot.toString()
+                })
+            });
+            const data = await res.json();
+            const container = document.getElementById('signalsContainer');
+            if (data.success && data.signals && data.signals.length > 0) {
+                let html = '';
+                data.signals.forEach(sig => {
+                    const isCall = sig.direction.includes('CALL');
+                    let recHtml = '';
+                    if (sig.recommendation && sig.recommendation.strike) {
+                        const rec = sig.recommendation;
+                        recHtml = `
+                            <div class="mt-3 p-2 rounded bg-black border border-warning">
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <span class="text-warning fw-bold small"><i class="bi bi-bullseye me-1"></i>Manual Trade Strike:</span>
+                                    <span class="badge bg-warning text-dark fw-bold fs-6">${rec.strike} ${isCall ? 'CE' : 'PE'}</span>
+                                </div>
+                                <div class="small text-light">
+                                    Contract: <code class="text-info">${rec.contract_symbol}</code> 
+                                    &bull; LTP: <strong>₹${rec.premium}</strong> 
+                                    &bull; Delta: <strong>${rec.delta}</strong>
+                                </div>
+                                <div class="d-flex justify-content-between text-secondary mt-2 pt-1 border-top border-secondary small" style="font-size: 0.76rem;">
+                                    <span>🎯 Target (+${rec.profit_target_pct || currentProfitTarget}%): <strong class="text-success">₹${rec.target_price}</strong></span>
+                                    <span>🛑 Stop Loss (-${rec.stop_loss_pct || currentStopLoss}%): <strong class="text-danger">₹${rec.stop_loss_price}</strong></span>
+                                    <span>💵 Capital/Lot: <strong class="text-light">₹${rec.capital_per_lot}</strong></span>
+                                </div>
+                                <button class="btn btn-sm btn-success fw-bold w-100 mt-2 btn-buy-paper-gs" 
+                                        data-symbol="${rec.contract_symbol}"
+                                        data-underlying="${currentSymbol}"
+                                        data-strike="${rec.strike}"
+                                        data-expiry="${selectedExpiry}"
+                                        data-option-type="${isCall ? 'CE' : 'PE'}"
+                                        data-price="${rec.ask || rec.premium}"
+                                        data-lot-size="${rec.lot_size || 25}"
+                                        data-target="${rec.target_price}"
+                                        data-stop="${rec.stop_loss_price}"
+                                        onclick="buyFromGammaSqueeze(this)">
+                                    <i class="bi bi-cart-plus me-1"></i> Buy in Paper Cockpit
+                                </button>
+                            </div>
+                        `;
+                    }
+                    html += `
+                        <div class="p-3 mb-3 rounded bg-dark border border-${isCall ? 'success' : 'danger'} shadow-sm">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="badge ${isCall ? 'bg-success' : 'bg-danger'} fs-6">
+                                    <i class="bi ${isCall ? 'bi-arrow-up-right-circle' : 'bi-arrow-down-right-circle'} me-1"></i>${sig.direction}
+                                </span>
+                                <span class="badge bg-secondary-subtle text-light border border-secondary">Confidence: ${sig.strength}%</span>
+                            </div>
+                            <div class="small text-light mt-2"><strong>Trigger Reason:</strong> ${sig.reason}</div>
+                            ${recHtml}
+                            <div class="small text-secondary mt-2" style="font-size: 0.72rem;">Target Delta: <strong>${sig.target_delta}</strong> | Expiry Horizon: <strong>${sig.min_dte}-${sig.max_dte} DTE</strong></div>
+                        </div>
+                    `;
+                });
+                container.innerHTML = html;
+            } else {
+                container.innerHTML = `
+                    <div class="p-3 text-center rounded bg-dark border border-secondary text-muted small">
+                        <i class="bi bi-check2-circle text-success fs-5 d-block mb-1"></i>
+                        No active squeeze triggers at current simulated price.
+                    </div>
+                `;
+            }
+        } catch (e) {
+            console.error("Failed to fetch live signals:", e);
+        }
+    }
+
+    async function buyFromGammaSqueeze(btn) {
+        const d = btn.dataset;
+        if (!d || !d.symbol) {
+            alert("Invalid signal data.");
+            return;
+        }
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Executing...';
+        btn.disabled = true;
+
+        try {
+            const payload = {
+                symbol: d.symbol,
+                underlying_symbol: d.underlying || "NIFTY",
+                strike: parseFloat(d.strike) || 0,
+                expiry: d.expiry || "",
+                option_type: d.optionType || "CE",
+                entry_price: parseFloat(d.price) || 0,
+                n_lots: 1,
+                lot_size: parseInt(d.lotSize) || 25,
+                entry_iv: 16.0,
+                target_price: parseFloat(d.target) || 0,
+                stop_loss_price: parseFloat(d.stop) || 0,
+                strategy: "Gamma Squeeze (Live Scanner)"
+            };
+
+            const res = await fetch("{% url 'dashboard:api_paper_buy_signal' %}", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.success) {
+                btn.className = "btn btn-sm btn-outline-success fw-bold w-100 mt-2";
+                btn.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Executed in Paper Cockpit!';
+                alert(data.message || `Successfully executed paper buy order for ${d.symbol}`);
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+                alert(data.error || "Order execution failed.");
+            }
+        } catch (err) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+            alert("Network error: " + err);
+        }
+    }
+
+    // Single-click Recalibrate Signal
+    async function recalibrateSignal(btn) {
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Recalibrating...';
+
+        try {
+            // Get Rank #1 from select or fallback
+            const sel = document.getElementById('strategyRankSelect');
+            let delta = 0.35, tp = 90.0, sl = 30.0, label = 'Rank #1: Top Net Profit (Δ=0.35, TP +90%)';
+            if (sel && sel.options.length > 0) {
+                const opt = sel.options[0];
+                delta = parseFloat(opt.dataset.delta) || 0.35;
+                tp = parseFloat(opt.dataset.tp) || 90.0;
+                sl = parseFloat(opt.dataset.sl) || 30.0;
+                label = opt.dataset.desc || opt.text;
+                sel.selectedIndex = 0;
+            }
+
+            const res = await fetch("{% url 'dashboard:api_gamma_calibrate' %}", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    target_delta: delta,
+                    profit_target_pct: tp,
+                    stop_loss_pct: sl,
+                    squeeze_score_threshold: 50.0,
+                    sync_auto_trader: true
+                })
+            });
+            const data = await res.json();
+
+            currentTargetDelta = delta;
+            currentProfitTarget = tp;
+            currentStopLoss = sl;
+
+            const badge = document.getElementById('activePresetBadge');
+            if (badge) badge.innerText = label;
+
+            // Highlight preset buttons if match
+            [1, 2, 3].forEach(rk => {
+                const b = document.getElementById('presetRankBtn' + rk);
+                if (b) {
+                    if (rk === 1) {
+                        b.className = 'btn btn-sm btn-cyan active py-1 text-truncate';
+                    } else {
+                        b.className = 'btn btn-sm btn-outline-secondary py-1 text-truncate';
+                    }
+                }
+            });
+
+            const slider = document.getElementById('spotRangeSlider');
+            const curSpot = slider ? parseFloat(slider.value) : currentSpot;
+            await refreshStrategySignals(curSpot);
+
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i> Recalibrated!';
+            setTimeout(() => { btn.innerHTML = origHtml; }, 3000);
+        } catch (e) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+            alert("Recalibration failed: " + e);
+        }
+    }
+
+    function onRankSelect(selectEl) {
+        const opt = selectEl.options[selectEl.selectedIndex];
+        if (!opt) return;
+        const delta = parseFloat(opt.dataset.delta);
+        const tp = parseFloat(opt.dataset.tp);
+        const sl = parseFloat(opt.dataset.sl);
+        const desc = opt.dataset.desc || opt.text;
+        const rank = parseInt(opt.value) || 1;
+        applyRankPreset(delta, tp, sl, desc, rank);
+    }
+
+    async function applyRankPreset(delta, tp, sl, label, rank) {
+        currentTargetDelta = delta;
+        currentProfitTarget = tp;
+        currentStopLoss = sl;
+
+        const badge = document.getElementById('activePresetBadge');
+        if (badge) badge.innerText = label;
+
+        const sel = document.getElementById('strategyRankSelect');
+        if (sel) {
+            for (let i = 0; i < sel.options.length; i++) {
+                if (parseInt(sel.options[i].value) === rank) {
+                    sel.selectedIndex = i;
+                    break;
+                }
+            }
+        }
+
+        [1, 2, 3].forEach(rk => {
+            const b = document.getElementById('presetRankBtn' + rk);
+            if (b) {
+                if (rk === rank) {
+                    b.className = 'btn btn-sm btn-cyan active py-1 text-truncate';
+                } else {
+                    b.className = 'btn btn-sm btn-outline-secondary py-1 text-truncate';
+                }
+            }
+        });
+
+        const slider = document.getElementById('spotRangeSlider');
+        const curSpot = slider ? parseFloat(slider.value) : currentSpot;
+        refreshStrategySignals(curSpot);
+
+        // Persist calibration
+        try {
+            await fetch("{% url 'dashboard:api_gamma_calibrate' %}", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    target_delta: delta,
+                    profit_target_pct: tp,
+                    stop_loss_pct: sl,
+                    squeeze_score_threshold: 50.0,
+                    sync_auto_trader: true
+                })
+            });
+        } catch (e) {}
+    }
+
+    function onModalRankSelect(sel) {
+        const opt = sel.options[sel.selectedIndex];
+        if (!opt || !opt.dataset.delta) return;
+        document.getElementById('modalTargetDelta').value = opt.dataset.delta;
+        document.getElementById('sliderDelta').value = opt.dataset.delta;
+        document.getElementById('modalProfitTarget').value = opt.dataset.tp;
+        document.getElementById('sliderTp').value = opt.dataset.tp;
+        document.getElementById('modalStopLoss').value = opt.dataset.sl;
+        document.getElementById('sliderSl').value = opt.dataset.sl;
+        if (opt.dataset.thresh) {
+            document.getElementById('modalSqueezeThresh').value = opt.dataset.thresh;
+        }
+    }
+
+    async function applyCustomSignalSettings() {
+        const delta = parseFloat(document.getElementById('modalTargetDelta').value) || 0.35;
+        const tp = parseFloat(document.getElementById('modalProfitTarget').value) || 50.0;
+        const sl = parseFloat(document.getElementById('modalStopLoss').value) || 30.0;
+        const thresh = parseFloat(document.getElementById('modalSqueezeThresh').value) || 50.0;
+        const syncAuto = document.getElementById('modalSyncPaper').checked;
+
+        try {
+            const res = await fetch("{% url 'dashboard:api_gamma_calibrate' %}", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    target_delta: delta,
+                    profit_target_pct: tp,
+                    stop_loss_pct: sl,
+                    squeeze_score_threshold: thresh,
+                    sync_auto_trader: syncAuto
+                })
+            });
+            const data = await res.json();
+            if (data.success) {
+                currentTargetDelta = delta;
+                currentProfitTarget = tp;
+                currentStopLoss = sl;
+
+                const badge = document.getElementById('activePresetBadge');
+                if (badge) badge.innerText = `Custom Preset (Δ=${delta}, TP +${tp}%, SL -${sl}%)`;
+
+                const modalEl = document.getElementById('customiseSignalModal');
+                const modalInst = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+                modalInst.hide();
+
+                const slider = document.getElementById('spotRangeSlider');
+                const curSpot = slider ? parseFloat(slider.value) : currentSpot;
+                await refreshStrategySignals(curSpot);
+            } else {
+                alert(data.error || "Failed to calibrate.");
+            }
+        } catch (e) {
+            alert("Error applying custom settings: " + e);
+        }
+    }
+</script>
+
+<!-- Customise Signal Settings Modal -->
+<div class="modal fade" id="customiseSignalModal" tabindex="-1" aria-labelledby="customiseSignalModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark border border-secondary text-light">
+            <div class="modal-header border-secondary">
+                <h5 class="modal-title fw-bold" id="customiseSignalModalLabel">
+                    <i class="bi bi-sliders text-info me-2"></i>Customise Gamma Squeeze Signal Settings
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3 p-2 rounded bg-black border border-secondary-subtle">
+                    <label class="form-label small text-info fw-bold mb-1"><i class="bi bi-trophy me-1"></i>Auto-Fill from Historical Rank:</label>
+                    <select class="form-select form-select-sm bg-dark text-light font-monospace" id="modalRankQuickSelect" onchange="onModalRankSelect(this)">
+                        <option value="">-- Choose a Backtest Rank to Load Parameters --</option>
+                        {% for r in ranks %}
+                        <option value="{{ r.rank }}" data-delta="{{ r.target_delta }}" data-tp="{{ r.profit_target_pct }}" data-sl="{{ r.stop_loss_pct }}" data-thresh="50.0">
+                            {{ r.title }} (Net: ₹{{ r.net_pnl|floatformat:0 }}, Sharpe: {{ r.sharpe_ratio }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="row g-3">
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-1">Target Delta ($\Delta$)</label>
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text bg-secondary border-secondary text-light">Δ</span>
+                            <input type="number" id="modalTargetDelta" class="form-control bg-dark border-secondary text-light font-monospace" value="{{ target_delta|default:'0.35' }}" step="0.05" min="0.10" max="0.80" oninput="document.getElementById('sliderDelta').value = this.value">
+                        </div>
+                        <input type="range" class="form-range mt-1" id="sliderDelta" min="0.10" max="0.80" step="0.05" value="{{ target_delta|default:'0.35' }}" oninput="document.getElementById('modalTargetDelta').value = this.value">
+                        <div class="d-flex justify-content-between text-muted" style="font-size: 0.65rem;">
+                            <span>0.15 (Far OTM)</span>
+                            <span>0.35 (Dir OTM)</span>
+                            <span>0.50 (ATM)</span>
+                        </div>
+                    </div>
+
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-1">Profit Target % (+TP)</label>
+                        <div class="input-group input-group-sm">
+                            <input type="number" id="modalProfitTarget" class="form-control bg-dark border-secondary text-light font-monospace" value="{{ profit_target_pct|default:'50.0' }}" step="5" min="10" max="300" oninput="document.getElementById('sliderTp').value = this.value">
+                            <span class="input-group-text bg-secondary border-secondary text-light">%</span>
+                        </div>
+                        <input type="range" class="form-range mt-1" id="sliderTp" min="20" max="150" step="5" value="{{ profit_target_pct|default:'50.0' }}" oninput="document.getElementById('modalProfitTarget').value = this.value">
+                        <div class="d-flex justify-content-between text-muted" style="font-size: 0.65rem;">
+                            <span>+30%</span>
+                            <span>+50%</span>
+                            <span>+100%</span>
+                        </div>
+                    </div>
+
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-1">Stop Loss % (-SL)</label>
+                        <div class="input-group input-group-sm">
+                            <input type="number" id="modalStopLoss" class="form-control bg-dark border-secondary text-light font-monospace" value="{{ stop_loss_pct|default:'30.0' }}" step="5" min="5" max="80" oninput="document.getElementById('sliderSl').value = this.value">
+                            <span class="input-group-text bg-secondary border-secondary text-light">%</span>
+                        </div>
+                        <input type="range" class="form-range mt-1" id="sliderSl" min="10" max="60" step="5" value="{{ stop_loss_pct|default:'30.0' }}" oninput="document.getElementById('modalStopLoss').value = this.value">
+                        <div class="d-flex justify-content-between text-muted" style="font-size: 0.65rem;">
+                            <span>-15%</span>
+                            <span>-30%</span>
+                            <span>-50%</span>
+                        </div>
+                    </div>
+
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-1">Squeeze Score Threshold</label>
+                        <div class="input-group input-group-sm">
+                            <input type="number" id="modalSqueezeThresh" class="form-control bg-dark border-secondary text-light font-monospace" value="50.0" step="5" min="30" max="90">
+                            <span class="input-group-text bg-secondary border-secondary text-light">/100</span>
+                        </div>
+                        <div class="small text-muted mt-1" style="font-size: 0.68rem;">Lower = more frequent triggers</div>
+                    </div>
+                </div>
+
+                <div class="form-check form-switch mt-3 pt-2 border-top border-secondary">
+                    <input class="form-check-input" type="checkbox" id="modalSyncPaper" checked>
+                    <label class="form-check-label small text-light" for="modalSyncPaper">
+                        <i class="bi bi-arrow-repeat text-cyan me-1"></i>Sync calibrated parameters directly with <strong>Paper Cockpit Auto-Trader</strong>
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer border-secondary">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-sm btn-cyan fw-bold px-3" onclick="applyCustomSignalSettings()">
+                    <i class="bi bi-lightning-charge-fill me-1"></i> Apply & Recalibrate
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

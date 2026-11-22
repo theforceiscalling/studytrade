@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "auto_buy": true,
+  "auto_squareoff": true,
+  "profit_target_pct": 60,
+  "stop_loss_pct": 30,
+  "target_delta": 0.35,
+  "min_confidence_pct": 60,
+  "max_capital_per_trade": 5000,
+  "total_capital_limit": 20000.0,
+  "max_open_positions": 3,
+  "auto_squareoff_time_ist": "15:20"
+}

@@ -1,0 +1,47 @@
+[
+  {
+    "n_bars": 2840,
+    "observed_sharpe": 0.9777461876369832,
+    "skewness": -1.0545216165581848,
+    "kurtosis": 43.97674363341046,
+    "var_sr": 1.1057094888827923,
+    "expected_max_sr_annual": 2.7702419467161823,
+    "t_stat": -5.721633616380413,
+    "dsr_n_trials": 5.275231776315468e-09,
+    "dsr_single_trial": 0.9990986838107495,
+    "label": "Run #46 (ATM 50% TP)",
+    "run_id": 46,
+    "total_trades": 1463,
+    "win_rate_pct": 63.021189336978814
+  },
+  {
+    "n_bars": 2840,
+    "observed_sharpe": 1.5001224165087284,
+    "skewness": 2.8008960794437385,
+    "kurtosis": 39.387518423603375,
+    "var_sr": 0.82101900972622,
+    "expected_max_sr_annual": 2.7702419467161823,
+    "t_stat": -4.7049001773304076,
+    "dsr_n_trials": 1.2699509940592197e-06,
+    "dsr_single_trial": 0.9999999862695396,
+    "label": "Run #44 (Directional OTM 90% TP)",
+    "run_id": 44,
+    "total_trades": 827,
+    "win_rate_pct": 65.17533252720678
+  },
+  {
+    "n_bars": 2840,
+    "observed_sharpe": 1.677905835359531,
+    "skewness": 4.448487871512718,
+    "kurtosis": 54.74676292418646,
+    "var_sr": 0.6799191277883962,
+    "expected_max_sr_annual": 2.7702419467161823,
+    "t_stat": -4.446415951599355,
+    "dsr_n_trials": 4.365740317544297e-06,
+    "dsr_single_trial": 0.9999999999957546,
+    "label": "Run #34 (Far OTM 50% TP)",
+    "run_id": 34,
+    "total_trades": 457,
+    "win_rate_pct": 71.55361050328227
+  }
+]

@@ -1,0 +1,153 @@
+# ============================================================
+# StudyTrade — Default Configuration
+# ============================================================
+# This file contains ALL settings with sensible defaults.
+# Override locally in config/local.yaml (gitignored).
+# ============================================================
+
+# ----------------------------------------------------------
+# General
+# ----------------------------------------------------------
+project:
+  name: "studytrade"
+  version: "0.1.0"
+  environment: "development"       # development | paper | live
+
+# ----------------------------------------------------------
+# Market
+# ----------------------------------------------------------
+market:
+  exchange: "NSE"
+  underlyings:
+    - symbol: "NIFTY"
+      lot_size: 25                  # As of 2024; verify on NSE
+      tick_size: 0.05
+    - symbol: "BANKNIFTY"
+      lot_size: 15                  # As of 2024; verify on NSE
+      tick_size: 0.05
+  trading_hours:
+    open: "09:15"
+    close: "15:30"
+    timezone: "Asia/Kolkata"
+  holidays_file: "config/nse_holidays.csv"  # Optional
+
+# ----------------------------------------------------------
+# Capital & Risk
+# ----------------------------------------------------------
+capital:
+  initial: 500000                   # ₹5,00,000
+  currency: "INR"
+
+risk:
+  max_risk_per_trade_pct: 1.5       # 1-2% of capital
+  max_daily_loss_pct: 5.0           # Daily stop
+  max_weekly_loss_pct: 10.0         # Weekly stop
+  max_concurrent_positions: 3
+  kill_switch_loss_pct: 15.0        # Halt all trading
+
+# ----------------------------------------------------------
+# Transaction Costs (NSE India — Options)
+# ----------------------------------------------------------
+costs:
+  brokerage_per_order: 20.0         # ₹20 flat (Zerodha)
+  stt_sell_pct: 0.0625              # STT on sell premium (%)
+  exchange_txn_pct: 0.0495          # NSE transaction charge (%)
+  sebi_per_crore: 10.0              # ₹10 per ₹1 crore turnover
+  gst_pct: 18.0                    # GST on brokerage + exchange txn
+  stamp_duty_buy_pct: 0.003         # Stamp duty on buy side (%)
+  slippage_ticks: 1.0               # Assumed slippage in ticks
+  use_bid_ask: true                 # Use bid/ask, never mid
+
+# ----------------------------------------------------------
+# Data
+# ----------------------------------------------------------
+data:
+  source: "synthetic"               # synthetic | csv | kite | upstox
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  synthetic_dir: "data/synthetic"
+  storage_format: "parquet"          # parquet | sqlite
+  # CSV-specific
+  csv:
+    spot_file: ""
+    option_chain_dir: ""
+  # Synthetic-specific
+  synthetic:
+    n_days: 252                      # ~1 trading year
+    spot_start: 20000.0              # Starting spot price
+    annual_vol: 0.18                 # 18% annualized vol
+    annual_drift: 0.10               # 10% annual drift
+    seed: 42                         # Reproducibility
+
+# ----------------------------------------------------------
+# Strategy
+# ----------------------------------------------------------
+strategy:
+  default: "momentum"               # Strategy name
+  timeframe: "swing"                # intraday | swing | positional
+  entry:
+    signal_threshold: 0.6
+  exit:
+    stop_loss_pct: 50.0             # % of premium paid
+    target_pct: 100.0               # % of premium paid
+    time_stop_bars: 5               # Exit after N bars
+    theta_decay_exit_dte: 3         # Exit if DTE <= this
+
+# ----------------------------------------------------------
+# Strike & Expiry Selection
+# ----------------------------------------------------------
+selection:
+  strike_method: "delta"             # delta | moneyness | fixed_offset
+  target_delta: 0.30                 # For delta-based selection
+  min_dte: 5                         # Minimum days to expiry
+  max_dte: 30                        # Maximum days to expiry
+  prefer_weekly: true                # Use weekly expiries if available
+  min_volume: 100                    # Minimum option volume filter
+  min_oi: 500                        # Minimum open interest filter
+
+# ----------------------------------------------------------
+# Backtesting
+# ----------------------------------------------------------
+backtest:
+  engine: "vectorized"               # vectorized | event_driven
+  start_date: ""                     # Empty = use all data
+  end_date: ""
+  out_of_sample_pct: 20.0           # Hold out last 20% for OOS
+  fill_model: "bid_ask"             # bid_ask | mid_with_slippage
+
+# ----------------------------------------------------------
+# ML (Optional)
+# ----------------------------------------------------------
+ml:
+  enabled: false
+  target: "direction"                # direction | magnitude | vol_expansion
+  models:
+    - "logistic_regression"
+    - "random_forest"
+    - "gradient_boosting"
+  cv:
+    method: "walk_forward"           # walk_forward | purged_kfold
+    n_splits: 5
+    embargo_days: 5                  # Gap between train and test
+    min_train_days: 126              # ~6 months
+  calibrate_probabilities: true
+
+# ----------------------------------------------------------
+# Logging
+# ----------------------------------------------------------
+logging:
+  level: "INFO"                      # DEBUG | INFO | WARNING | ERROR
+  console: true
+  file: true
+  log_dir: "logs"
+  format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+
+# ----------------------------------------------------------
+# Paper Trading
+# ----------------------------------------------------------
+paper:
+  enabled: false
+  feed_source: "kite"               # kite | upstox | simulated
+  poll_interval_sec: 5
+  dashboard_port: 8501

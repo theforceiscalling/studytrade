@@ -1,0 +1,680 @@
+{% extends "base.html" %}
+
+{% block title %}Paper Trading Cockpit — StudyTrade{% endblock %}
+
+{% block content %}
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-3">
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+                <div>
+                    <h4 class="fw-bold mb-1"><i class="bi bi-journal-code text-info me-2"></i>Paper Trading & Autonomous Greeks Cockpit</h4>
+                    <p class="small text-secondary mb-0">Simulated live execution engine backed by SQLite ledger (`data/paper_journal.db`).</p>
+                </div>
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                    <span class="badge bg-dark border border-secondary px-3 py-2 text-light">
+                        <i class="bi bi-cash-stack me-1 text-success"></i> Initial Capital: ₹{{ initial_capital|floatformat:0 }}
+                    </span>
+                    <span class="badge bg-dark border border-secondary px-3 py-2 text-light">
+                        <i class="bi bi-pie-chart me-1 text-info"></i> Deployed: ₹{{ deployed_capital }}
+                    </span>
+                    <span class="badge bg-dark border border-secondary px-3 py-2 text-light">
+                        <i class="bi bi-wallet2 me-1 text-warning"></i> Available: ₹{{ available_capital }}
+                    </span>
+                    <button id="btnSyncBhavcopy" class="btn btn-sm btn-outline-info" onclick="syncOfficialBhavcopy()">
+                        <i class="bi bi-cloud-arrow-down me-1"></i> Sync Official Bhavcopy
+                    </button>
+                    <span id="autoTraderHeaderBadge" class="badge {% if auto_config.enabled %}bg-success-subtle text-success border border-success-subtle{% else %}bg-secondary-subtle text-secondary border border-secondary-subtle{% endif %} px-3 py-2">
+                        <i class="bi bi-robot me-1"></i> Auto-Trader: {% if auto_config.enabled %}ACTIVE{% else %}PAUSED{% endif %}
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Portfolio Greeks Monitor -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-label">Net Portfolio Delta ($\Delta$)</div>
+            <div class="stat-val {% if net_delta > 0 %}text-success{% elif net_delta < 0 %}text-danger{% else %}text-light{% endif %}">
+                {{ net_delta }}
+            </div>
+            <div class="small text-muted mt-1">₹ move per 1-pt index change</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-label">Net Portfolio Gamma ($\Gamma$)</div>
+            <div class="stat-val text-info">{{ net_gamma }}</div>
+            <div class="small text-muted mt-1">Rate of delta change</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-label">Net Portfolio Vega ($\mathcal{V}_{1\%}$)</div>
+            <div class="stat-val text-warning">{{ net_vega }}</div>
+            <div class="small text-muted mt-1">P&L impact per +1% IV move</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card border-danger-subtle">
+            <div class="stat-label">Daily Theta Bleed ($\Theta$)</div>
+            <div class="stat-val text-danger">₹{{ total_theta_bleed }} / day</div>
+            <div class="small text-muted mt-1">Time decay cost to hold open positions</div>
+        </div>
+    </div>
+</div>
+
+<!-- Autonomous Auto-Execution & Risk Control Panel -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-4 border-primary">
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-3">
+                <div>
+                    <h5 class="fw-bold mb-1"><i class="bi bi-cpu-fill text-primary me-2"></i>Autonomous Auto-Execution & Square-Off Engine</h5>
+                    <p class="small text-secondary mb-0">
+                        Automatically executes paper buy orders for high-conviction signals and squares off positions upon hitting Stop Loss, Profit Target, or Expiry cutoffs.
+                    </p>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <button id="btnToggleAutoTrader" class="btn btn-sm {% if auto_config.enabled %}btn-outline-warning{% else %}btn-success{% endif %} px-3" onclick="toggleAutoTrader()">
+                        {% if auto_config.enabled %}
+                            <i class="bi bi-pause-circle me-1"></i> Pause Auto-Trader
+                        {% else %}
+                            <i class="bi bi-play-circle me-1"></i> Activate Auto-Trader
+                        {% endif %}
+                    </button>
+                    <button class="btn btn-sm btn-outline-info px-3" onclick="runAutoCycle()">
+                        <i class="bi bi-lightning-charge me-1"></i> Run Auto-Cycle Now
+                    </button>
+                </div>
+            </div>
+
+            <!-- Backtest Rank Preset Quick Selector -->
+            <div class="p-2 mb-3 rounded bg-dark border border-secondary-subtle d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <div class="d-flex align-items-center gap-2 flex-grow-1" style="min-width: 280px;">
+                    <label class="form-label small text-info fw-bold mb-0 text-nowrap">
+                        <i class="bi bi-trophy-fill text-warning me-1"></i>Calibrate as per Backtest Rank:
+                    </label>
+                    <select id="paperStrategyRankSelect" class="form-select form-select-sm bg-black text-light font-monospace" onchange="onPaperRankSelect(this)">
+                        <option value="">-- Choose Historical Backtest Rank --</option>
+                        {% for r in strategy_ranks %}
+                        <option value="{{ r.rank }}" 
+                                data-delta="{{ r.target_delta }}" 
+                                data-tp="{{ r.profit_target_pct }}" 
+                                data-sl="{{ r.stop_loss_pct }}" 
+                                data-desc="{{ r.title }}"
+                                {% if r.target_delta == auto_config.target_delta and r.profit_target_pct == auto_config.profit_target_pct %}selected{% endif %}>
+                            {{ r.label }}: {{ r.symbol }} [Δ={{ r.target_delta }}, TP +{{ r.profit_target_pct|floatformat:0 }}%, SL -{{ r.stop_loss_pct|floatformat:0 }}%, Sharpe: {{ r.sharpe_ratio }}]
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-cyan fw-bold px-3 shadow-sm" onclick="recalibratePaperToRank1()" title="Apply Rank #1 settings to Auto-Trader immediately">
+                        <i class="bi bi-lightning-charge-fill me-1"></i> Recalibrate to Rank #1
+                    </button>
+                </div>
+            </div>
+
+            <!-- Parameters Grid -->
+            <div class="row g-3 align-items-end pt-2 border-top border-secondary-subtle">
+                <div class="col-md-2 col-6">
+                    <label class="form-label small text-muted mb-1">Profit Target % (+TP)</label>
+                    <div class="input-group input-group-sm">
+                        <input type="number" id="cfgProfitTarget" class="form-control font-monospace" value="{{ auto_config.profit_target_pct|default:'50.0' }}" step="5" min="10" max="300">
+                        <span class="input-group-text">%</span>
+                    </div>
+                </div>
+                <div class="col-md-2 col-6">
+                    <label class="form-label small text-muted mb-1">Stop Loss % (-SL)</label>
+                    <div class="input-group input-group-sm">
+                        <input type="number" id="cfgStopLoss" class="form-control font-monospace" value="{{ auto_config.stop_loss_pct|default:'30.0' }}" step="5" min="5" max="80">
+                        <span class="input-group-text">%</span>
+                    </div>
+                </div>
+                <div class="col-md-2 col-6">
+                    <label class="form-label small text-muted mb-1">Target $\Delta$</label>
+                    <select id="cfgTargetDelta" class="form-select form-select-sm font-monospace">
+                        <option value="0.25" {% if auto_config.target_delta == 0.25 %}selected{% endif %}>0.25 (Far OTM)</option>
+                        <option value="0.35" {% if auto_config.target_delta == 0.35 or not auto_config.target_delta %}selected{% endif %}>0.35 (Directional OTM #1)</option>
+                        <option value="0.40" {% if auto_config.target_delta == 0.40 %}selected{% endif %}>0.40 (Directional OTM #2)</option>
+                        <option value="0.50" {% if auto_config.target_delta == 0.50 %}selected{% endif %}>0.50 (ATM Strike #1 Net)</option>
+                    </select>
+                </div>
+                <div class="col-md-2 col-6">
+                    <label class="form-label small text-muted mb-1">Min Confidence</label>
+                    <div class="input-group input-group-sm">
+                        <input type="number" id="cfgMinConf" class="form-control font-monospace" value="{{ auto_config.min_confidence_pct|default:'60.0' }}" step="5" min="40" max="95">
+                        <span class="input-group-text">%</span>
+                    </div>
+                </div>
+                <div class="col-md-2 col-6">
+                    <label class="form-label small text-muted mb-1">Max Cap / Trade</label>
+                    <div class="input-group input-group-sm">
+                        <span class="input-group-text">₹</span>
+                        <input type="number" id="cfgMaxCap" class="form-control font-monospace" value="{{ auto_config.max_capital_per_trade|default:'5000.0' }}" step="500" min="1000" max="20000">
+                    </div>
+                </div>
+                <div class="col-md-2 col-6">
+                    <label class="form-label small text-muted mb-1">Square-Off Time</label>
+                    <input type="text" id="cfgSquareoffTime" class="form-control form-control-sm font-monospace" value="{{ auto_config.auto_squareoff_time_ist|default:'15:20' }}">
+                </div>
+            </div>
+
+            <div class="d-flex flex-wrap justify-content-between align-items-center mt-3 pt-3 border-top border-secondary-subtle">
+                <div class="d-flex gap-4">
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" id="cfgAutoBuy" {% if auto_config.auto_buy %}checked{% endif %}>
+                        <label class="form-check-label small text-light" for="cfgAutoBuy">Auto-Buy Strategy Signals</label>
+                    </div>
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" id="cfgAutoSquareoff" {% if auto_config.auto_squareoff %}checked{% endif %}>
+                        <label class="form-check-label small text-light" for="cfgAutoSquareoff">Auto-Square-Off at SL / TP / Expiry</label>
+                    </div>
+                </div>
+                <div>
+                    <button class="btn btn-sm btn-primary px-3" onclick="saveAutoTraderConfig()">
+                        <i class="bi bi-save me-1"></i> Save Execution Parameters
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 90-Day Safety Lockout Banner -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-4 border-warning">
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+                <div>
+                    <h5 class="fw-bold text-warning mb-1"><i class="bi bi-lock-fill me-2"></i>Mandatory 90-Day Live Safety Gate</h5>
+                    <p class="small text-secondary mb-2">
+                        Systematic option buying carries a severe risk of capital ruin from theta decay and volatility crush. 
+                        You must complete at least <strong>90 consecutive trading days</strong> of forward paper trading across multiple market regimes before enabling live broker execution.
+                    </p>
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="progress flex-grow-1" style="height: 8px; max-width: 300px;">
+                            <div class="progress-bar bg-warning" role="progressbar" style="width: {{ paper_days_pct }}%;"></div>
+                        </div>
+                        <span class="small font-monospace text-light fw-bold">{{ paper_days }} of 90 Days Completed</span>
+                    </div>
+                </div>
+                <div>
+                    {% if is_locked %}
+                        <button class="btn btn-outline-secondary" disabled>
+                            <i class="bi bi-lock me-1"></i> Live Broker Execution (Locked)
+                        </button>
+                    {% else %}
+                        <button class="btn btn-danger">
+                            <i class="bi bi-unlock me-1"></i> Authorize Live Trading
+                        </button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Real-Time Strategy Signals Section -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-4 border-info">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                    <h5 class="fw-bold mb-1"><i class="bi bi-lightning-charge-fill text-warning me-2"></i>Real-Time Strategy Signals (Gamma Squeeze & Dealer Cascade)</h5>
+                    <p class="small text-secondary mb-0">
+                        Calibrated to #1 Backtest Settings (Target $\Delta=0.35/0.50$, +50% Profit Target, -30% Stop Loss, ₹20,000 Capital). 
+                        1-Click execution places simulated paper orders directly into your SQLite ledger.
+                    </p>
+                </div>
+                <span class="badge bg-info-subtle text-info border border-info-subtle px-3 py-1">
+                    <i class="bi bi-check-circle me-1"></i> Calibrated Scanner Active
+                </span>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-custom table-hover text-center align-middle">
+                    <thead>
+                        <tr>
+                            <th>Signal Type</th>
+                            <th>Contract Symbol</th>
+                            <th>Underlying / Strike</th>
+                            <th>Target $\Delta$</th>
+                            <th>Entry Ask (₹)</th>
+                            <th>Target (+50%)</th>
+                            <th>Stop Loss (-30%)</th>
+                            <th>Margin Req (₹)</th>
+                            <th>Confidence</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for sig in realtime_signals %}
+                        <tr>
+                            <td>
+                                {% if "CALL" in sig.direction %}
+                                    <span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1">
+                                        <i class="bi bi-graph-up-arrow me-1"></i>{{ sig.badge_text }}
+                                    </span>
+                                {% else %}
+                                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle px-2 py-1">
+                                        <i class="bi bi-graph-down-arrow me-1"></i>{{ sig.badge_text }}
+                                    </span>
+                                {% endif %}
+                            </td>
+                            <td class="fw-bold font-monospace text-light">{{ sig.symbol }}</td>
+                            <td>
+                                <span class="badge bg-dark border border-secondary">{{ sig.underlying_symbol }}</span>
+                                <span class="font-monospace ms-1">{{ sig.strike }}</span>
+                            </td>
+                            <td class="font-monospace text-info">{{ sig.target_delta }}</td>
+                            <td class="font-monospace fw-bold text-success">₹{{ sig.entry_price|floatformat:2 }}</td>
+                            <td class="font-monospace text-success">₹{{ sig.target_price|floatformat:2 }}</td>
+                            <td class="font-monospace text-danger">₹{{ sig.stop_loss_price|floatformat:2 }}</td>
+                            <td class="font-monospace">₹{{ sig.capital_required|floatformat:2 }}</td>
+                            <td>
+                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+                                    {{ sig.confidence_pct }}%
+                                </span>
+                            </td>
+                            <td>
+                                <button class="btn btn-sm btn-primary fw-bold px-3 btn-buy-paper" 
+                                        data-symbol="{{ sig.symbol }}"
+                                        data-underlying="{{ sig.underlying_symbol }}"
+                                        data-strike="{{ sig.strike }}"
+                                        data-expiry="{{ sig.expiry }}"
+                                        data-option-type="{{ sig.option_type }}"
+                                        data-price="{{ sig.entry_price }}"
+                                        data-lot-size="{{ sig.lot_size }}"
+                                        data-target="{{ sig.target_price }}"
+                                        data-stop="{{ sig.stop_loss_price }}"
+                                        data-badge="{{ sig.badge_text }}"
+                                        onclick="buyPaperSignal(this)">
+                                    <i class="bi bi-cart-plus me-1"></i> Buy Trade (Paper)
+                                </button>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="10" class="text-center text-muted py-4">
+                                <i class="bi bi-info-circle me-1"></i> No active squeeze signals triggered at current spot levels. Scanner continues monitoring live feeds.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Active Positions & Paper Ledger -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="fw-bold mb-0"><i class="bi bi-wallet2 text-info me-2"></i>Currently Open Paper Positions</h5>
+                <span class="badge bg-dark border border-secondary text-secondary">
+                    Auto-Monitored for SL & TP
+                </span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-custom table-hover text-center align-middle">
+                    <thead>
+                        <tr>
+                            <th>Option Symbol</th>
+                            <th>Type</th>
+                            <th>Strike</th>
+                            <th>Expiry</th>
+                            <th>Lots</th>
+                            <th>Entry (₹)</th>
+                            <th>LTP / Bid (₹)</th>
+                            <th>Target (+TP)</th>
+                            <th>Stop Loss (-SL)</th>
+                            <th>Unrealized P&L</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="openPositionsTbody">
+                        {% for pos in open_positions %}
+                        <tr id="pos-row-{{ pos.id }}">
+                            <td class="fw-bold text-light font-monospace">{{ pos.symbol }}</td>
+                            <td>
+                                {% if pos.option_type == 'CE' %}
+                                    <span class="badge badge-call">CALL</span>
+                                {% else %}
+                                    <span class="badge badge-put">PUT</span>
+                                {% endif %}
+                            </td>
+                            <td class="font-monospace">{{ pos.strike }}</td>
+                            <td>{{ pos.expiry|slice:":10" }}</td>
+                            <td class="font-monospace">{{ pos.quantity }}</td>
+                            <td class="font-monospace text-muted">₹{{ pos.entry_price|floatformat:2 }}</td>
+                            <td class="font-monospace fw-bold text-light">₹{{ pos.current_price|floatformat:2 }}</td>
+                            <td class="font-monospace text-success fw-bold">₹{{ pos.target_price|floatformat:2 }}</td>
+                            <td class="font-monospace text-danger fw-bold">₹{{ pos.stop_loss_price|floatformat:2 }}</td>
+                            <td class="font-monospace">
+                                <span class="badge {% if pos.pnl_pct >= 0 %}bg-success-subtle text-success border border-success-subtle{% else %}bg-danger-subtle text-danger border border-danger-subtle{% endif %} px-2 py-1">
+                                    {% if pos.unrealized_pnl >= 0 %}+{% endif %}₹{{ pos.unrealized_pnl|floatformat:2 }} ({{ pos.pnl_pct }}%)
+                                </span>
+                            </td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-danger" 
+                                        onclick="closePaperPosition(this, '{{ pos.symbol }}', {{ pos.id }}, {{ pos.current_price }})">
+                                    <i class="bi bi-x-circle me-1"></i> Square Off
+                                </button>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="11" class="text-center text-muted py-4">No open paper positions. Auto-trader will automatically populate this table upon signal generation.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Paper Trade History -->
+<div class="row g-4">
+    <div class="col-12">
+        <div class="card-custom p-4">
+            <h5 class="fw-bold mb-3"><i class="bi bi-clock-history text-info me-2"></i>Paper Trading Journal Ledger</h5>
+            <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                <table class="table table-custom table-hover text-center align-middle">
+                    <thead class="sticky-top">
+                        <tr>
+                            <th>Trade ID</th>
+                            <th>Symbol</th>
+                            <th>Entry Time</th>
+                            <th>Exit Time</th>
+                            <th>Entry (₹)</th>
+                            <th>Exit (₹)</th>
+                            <th>Net PnL (₹)</th>
+                            <th>Exit Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for trade in trade_history %}
+                        <tr>
+                            <td class="font-monospace text-muted">{{ trade.id }}</td>
+                            <td class="fw-bold font-monospace text-light">{{ trade.symbol }}</td>
+                            <td>{{ trade.entry_time|slice:":19" }}</td>
+                            <td>{{ trade.exit_time|slice:":19" }}</td>
+                            <td class="font-monospace">₹{{ trade.entry_price|floatformat:2 }}</td>
+                            <td class="font-monospace">₹{{ trade.exit_price|floatformat:2 }}</td>
+                            <td class="font-monospace fw-bold {% if trade.net_pnl >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                ₹{{ trade.net_pnl|floatformat:2 }}
+                            </td>
+                            <td>
+                                {% if "PROFIT_TARGET" in trade.exit_reason %}
+                                    <span class="badge bg-success-subtle text-success border border-success-subtle">{{ trade.exit_reason }}</span>
+                                {% elif "STOP_LOSS" in trade.exit_reason %}
+                                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle">{{ trade.exit_reason }}</span>
+                                {% else %}
+                                    <span class="badge bg-dark border border-secondary">{{ trade.exit_reason }}</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="8" class="text-center text-muted py-4">No closed paper trades recorded in journal yet.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function buyPaperSignal(btn) {
+    const d = btn.dataset;
+    if (!d || !d.symbol) {
+        alert("Invalid signal data.");
+        return;
+    }
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Buying...';
+    btn.disabled = true;
+
+    try {
+        const payload = {
+            symbol: d.symbol,
+            underlying_symbol: d.underlying || "NIFTY",
+            strike: parseFloat(d.strike) || 0,
+            expiry: d.expiry || "",
+            option_type: d.optionType || "CE",
+            entry_price: parseFloat(d.price) || 0,
+            n_lots: 1,
+            lot_size: parseInt(d.lotSize) || 25,
+            entry_iv: 16.0,
+            strategy: "Gamma Squeeze (" + (d.badge || "Real-Time") + ")"
+        };
+
+        const res = await fetch("{% url 'dashboard:api_paper_buy_signal' %}", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (data.success) {
+            alert("✓ " + data.message);
+            window.location.reload();
+        } else {
+            alert("Order Failed: " + (data.error || "Unknown error"));
+            btn.innerHTML = origHtml;
+            btn.disabled = false;
+        }
+    } catch (err) {
+        alert("Network error executing paper trade: " + err);
+        btn.innerHTML = origHtml;
+        btn.disabled = false;
+    }
+}
+
+async function closePaperPosition(btn, symbol, posId, exitPrice) {
+    if (!confirm(`Are you sure you want to square off ${symbol}?`)) {
+        return;
+    }
+
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Closing...';
+    btn.disabled = true;
+
+    try {
+        const payload = {
+            symbol: symbol,
+            position_id: posId,
+            exit_price: exitPrice,
+            exit_reason: "MANUAL_SQUARE_OFF"
+        };
+
+        const res = await fetch("{% url 'dashboard:api_paper_close_position' %}", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (data.success) {
+            alert("✓ " + data.message);
+            window.location.reload();
+        } else {
+            alert("Close Failed: " + (data.error || "Unknown error"));
+            btn.innerHTML = origHtml;
+            btn.disabled = false;
+        }
+    } catch (err) {
+        alert("Network error closing paper trade: " + err);
+        btn.innerHTML = origHtml;
+        btn.disabled = false;
+    }
+}
+
+async function syncOfficialBhavcopy() {
+    const btn = document.getElementById("btnSyncBhavcopy");
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Fetching Bhavcopy...';
+    btn.disabled = true;
+
+    try {
+        const res = await fetch("{% url 'dashboard:api_sync_bhavcopy' %}", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({})
+        });
+
+        const data = await res.json();
+        if (data.success) {
+            alert("✓ " + data.message);
+            window.location.reload();
+        } else {
+            alert("Bhavcopy Sync Failed: " + (data.error || "Unknown error"));
+        }
+    } catch (err) {
+        alert("Network error syncing Bhavcopy: " + err);
+    } finally {
+        btn.innerHTML = origHtml;
+        btn.disabled = false;
+    }
+}
+
+async function toggleAutoTrader() {
+    try {
+        const res = await fetch("{% url 'dashboard:api_auto_trader_toggle' %}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" }
+        });
+        const data = await res.json();
+        if (data.success) {
+            alert("✓ " + data.message);
+            window.location.reload();
+        }
+    } catch (err) {
+        alert("Error toggling auto-trader: " + err);
+    }
+}
+
+async function saveAutoTraderConfig() {
+    const payload = {
+        profit_target_pct: parseFloat(document.getElementById("cfgProfitTarget").value) || 50.0,
+        stop_loss_pct: parseFloat(document.getElementById("cfgStopLoss").value) || 30.0,
+        target_delta: parseFloat(document.getElementById("cfgTargetDelta").value) || 0.35,
+        min_confidence_pct: parseFloat(document.getElementById("cfgMinConf").value) || 60.0,
+        max_capital_per_trade: parseFloat(document.getElementById("cfgMaxCap").value) || 5000.0,
+        auto_squareoff_time_ist: document.getElementById("cfgSquareoffTime").value || "15:20",
+        auto_buy: document.getElementById("cfgAutoBuy").checked,
+        auto_squareoff: document.getElementById("cfgAutoSquareoff").checked,
+    };
+
+    try {
+        const res = await fetch("{% url 'dashboard:api_auto_trader_configure' %}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+            alert("✓ Parameters Saved! The Autonomous Engine will trade as per these settings.");
+            window.location.reload();
+        } else {
+            alert("Save Failed: " + (data.error || "Unknown error"));
+        }
+    } catch (err) {
+        alert("Error saving configuration: " + err);
+    }
+}
+
+async function runAutoCycle() {
+    try {
+        const res = await fetch("{% url 'dashboard:api_auto_trader_run_cycle' %}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" }
+        });
+        const data = await res.json();
+        if (data.success) {
+            const report = data.report;
+            let msg = `Auto-Cycle Executed!\n\n`;
+            msg += `• Closed Trades: ${report.closed_trades.length}\n`;
+            if (report.closed_trades.length > 0) {
+                report.closed_trades.forEach(t => {
+                    msg += `   - ${t.symbol}: ${t.exit_reason} (Net: ₹${t.net_pnl})\n`;
+                });
+            }
+            msg += `• Opened Trades: ${report.opened_trades.length}\n`;
+            if (report.opened_trades.length > 0) {
+                report.opened_trades.forEach(t => {
+                    msg += `   - ${t.symbol} @ ₹${t.entry_price} (TP: ₹${t.target_price}, SL: ₹${t.stop_loss_price})\n`;
+                });
+            }
+            msg += `• Active Open Positions: ${report.open_positions_count}\n`;
+            msg += `• Deployed Capital: ₹${report.deployed_capital} / ₹20,000`;
+            alert(msg);
+            window.location.reload();
+        } else {
+            alert("Execution Failed: " + (data.error || "Unknown error"));
+        }
+    } catch (err) {
+        alert("Error executing auto-cycle: " + err);
+    }
+}
+
+async function onPaperRankSelect(sel) {
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.dataset.delta) return;
+    document.getElementById('cfgTargetDelta').value = opt.dataset.delta;
+    document.getElementById('cfgProfitTarget').value = opt.dataset.tp;
+    document.getElementById('cfgStopLoss').value = opt.dataset.sl;
+    await saveAutoTraderConfig();
+}
+
+async function recalibratePaperToRank1() {
+    const sel = document.getElementById('paperStrategyRankSelect');
+    if (sel && sel.options.length > 1) {
+        sel.selectedIndex = 1;
+        await onPaperRankSelect(sel);
+    } else {
+        document.getElementById('cfgTargetDelta').value = "0.35";
+        document.getElementById('cfgProfitTarget').value = "90";
+        document.getElementById('cfgStopLoss').value = "30";
+        await saveAutoTraderConfig();
+    }
+}
+
+// Background poller: runs auto-cycle check every 25 seconds if active
+{% if auto_config.enabled %}
+setInterval(async () => {
+    try {
+        const res = await fetch("{% url 'dashboard:api_auto_trader_run_cycle' %}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" }
+        });
+        const data = await res.json();
+        if (data.success && (data.report.closed_trades.length > 0 || data.report.opened_trades.length > 0)) {
+            console.log("Auto-trader activity detected. Reloading page...", data.report);
+            window.location.reload();
+        }
+    } catch (e) {
+        console.debug("Auto-trader background poll error:", e);
+    }
+}, 25000);
+{% endif %}
+</script>
+{% endblock %}

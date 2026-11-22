@@ -1,0 +1,37 @@
+# ============================================================
+# StudyTrade - Pinned Dependencies
+# Generated from pyproject.toml — keep in sync
+# Install: pip install -r requirements.txt
+# Or better: pip install -e ".[dev]"
+# ============================================================
+
+# Core
+numpy>=1.26
+pandas>=2.1
+pyarrow>=14.0
+pydantic>=2.5
+pyyaml>=6.0
+python-dotenv>=1.0
+scipy>=1.11
+statsmodels>=0.14
+matplotlib>=3.8
+plotly>=5.18
+rich>=13.0
+typer>=0.9
+
+# Dev / Testing
+pytest>=7.4
+pytest-cov>=4.1
+hypothesis>=6.90
+ruff>=0.1
+mypy>=1.7
+
+# Optional — uncomment as needed
+# scikit-learn>=1.3
+# hmmlearn>=0.3
+# kiteconnect>=5.0
+# streamlit>=1.28
+django>=5.0
+# py_vollib>=1.0.1
+# ipykernel>=6.0
+# jupyterlab>=4.0

@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+
+{% block title %}Data Lab — StudyTrade{% endblock %}
+
+{% block content %}
+<div class="row g-4 mb-4">
+    <!-- Header & Controls -->
+    <div class="col-12">
+        <div class="card-custom p-3">
+            <div class="row align-items-center g-3">
+                <div class="col-md-3">
+                    <label class="form-label small text-muted mb-1">Underlying Symbol</label>
+                    <select id="symbolSelect" class="form-select bg-dark border-secondary text-light" onchange="updateQuery()">
+                        {% for sym in symbols %}
+                            <option value="{{ sym }}" {% if sym == symbol %}selected{% endif %}>{{ sym }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small text-muted mb-1">Snapshot Date</label>
+                    <select id="dateSelect" class="form-select bg-dark border-secondary text-light" onchange="updateQuery()">
+                        {% for dt in dates %}
+                            <option value="{{ dt }}" {% if dt == selected_date %}selected{% endif %}>{{ dt }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small text-muted mb-1">Contract Expiry</label>
+                    <select id="expirySelect" class="form-select bg-dark border-secondary text-light" onchange="updateQuery()">
+                        {% for exp in expiries %}
+                            <option value="{{ exp }}" {% if exp == selected_expiry %}selected{% endif %}>{{ exp }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3 d-flex align-items-end">
+                    <button class="btn btn-outline-info w-100" type="button" data-bs-toggle="collapse" data-bs-target="#dataGenPanel">
+                        <i class="bi bi-cloud-arrow-down me-1"></i> Data Generator / Ingestion
+                    </button>
+                </div>
+            </div>
+
+            <!-- Expandable Data Generator Panel -->
+            <div class="collapse mt-3" id="dataGenPanel">
+                <div class="p-3 border border-secondary rounded bg-dark">
+                    <h6 class="fw-bold text-info"><i class="bi bi-gear-fill me-1"></i> Synthetic / Real Data Generator</h6>
+                    <p class="small text-secondary mb-2">Simulate continuous spot paths via Geometric Brownian Motion and generate multi-expiry option chains with realistic volatility skew and bid-ask spreads.</p>
+                    <div class="row g-2 align-items-center">
+                        <div class="col-auto">
+                            <label class="col-form-label small text-muted">Days to generate:</label>
+                        </div>
+                        <div class="col-auto">
+                            <input type="number" id="genDays" class="form-control form-control-sm bg-dark border-secondary text-light" value="125" min="10" max="365">
+                        </div>
+                        <div class="col-auto">
+                            <button class="btn btn-sm btn-cyan" onclick="triggerDataGen()">
+                                <i class="bi bi-play-fill me-1"></i> Generate & Store Data
+                            </button>
+                        </div>
+                        <div class="col-auto">
+                            <span id="genStatus" class="small ms-2"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Microstructure KPI Cards -->
+<div class="row g-3 mb-3">
+    <div class="col-md-4">
+        <div class="stat-card">
+            <div class="stat-label">Put-Call Ratio (PCR - Open Interest)</div>
+            <div class="stat-val {% if pcr > 1.0 %}text-success{% elif pcr < 0.7 %}text-danger{% else %}text-warning{% endif %}">
+                {{ pcr }}
+            </div>
+            <div class="small text-muted mt-1">{% if pcr > 1.2 %}Strong Put buildup (Bullish){% elif pcr < 0.7 %}High Call buildup (Bearish){% else %}Neutral / Balanced market{% endif %}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card">
+            <div class="stat-label">Max Pain Strike</div>
+            <div class="stat-val text-info">{{ max_pain|floatformat:0 }}</div>
+            <div class="small text-muted mt-1">Expiry strike where option writers lose least</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card">
+            <div class="stat-label">Active Expiry Selected</div>
+            <div class="stat-val text-light">{{ selected_expiry|default:"N/A" }}</div>
+            <div class="small text-muted mt-1">Weekly contract snapshot</div>
+        </div>
+    </div>
+</div>
+
+<!-- Gamma Exposure (GEX) & Squeeze KPI Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-label"><i class="bi bi-shield-shaded text-warning me-1"></i>Call Wall (Squeeze Barrier)</div>
+            <div class="stat-val text-warning">{{ call_wall|floatformat:0 }}</div>
+            <div class="small text-muted mt-1">Major dealer short call resistance</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-label"><i class="bi bi-shield-fill text-danger me-1"></i>Put Wall (Cascade Floor)</div>
+            <div class="stat-val text-danger">{{ put_wall|floatformat:0 }}</div>
+            <div class="small text-muted mt-1">Major dealer short put support</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-label"><i class="bi bi-arrow-left-right text-info me-1"></i>Gamma Flip Level</div>
+            <div class="stat-val text-info">{{ gamma_flip|floatformat:0 }}</div>
+            <div class="small text-muted mt-1">Zero-Gamma regime boundary</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-label"><i class="bi bi-lightning-charge text-primary me-1"></i>Squeeze Risk Index</div>
+            <div class="stat-val {% if call_squeeze_score >= 65 %}text-danger{% elif call_squeeze_score >= 40 %}text-warning{% else %}text-success{% endif %}">
+                {{ call_squeeze_score|floatformat:0 }}<span class="small text-muted">/100</span>
+            </div>
+            <div class="small text-muted mt-1">{% if call_squeeze_score >= 65 %}High Squeeze Vulnerability{% elif call_squeeze_score >= 40 %}Moderate Gamma Pressure{% else %}Stable / Mean-Reverting{% endif %}</div>
+        </div>
+    </div>
+</div>
+
+<!-- Spot History Chart & IV Skew -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-7">
+        <div class="card-custom p-3 h-100">
+            <h6 class="fw-bold text-light mb-2"><i class="bi bi-candlestick text-info me-2"></i>Underlying Spot Price History (OHLC)</h6>
+            <div id="spotChart" style="height: 380px;"></div>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="card-custom p-3 h-100">
+            <h6 class="fw-bold text-light mb-2"><i class="bi bi-bezier text-info me-2"></i>Implied Volatility Smile & Skew</h6>
+            <div id="skewChart" style="height: 380px;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Option Chain Table -->
+<div class="row g-4">
+    <div class="col-12">
+        <div class="card-custom p-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="fw-bold mb-0"><i class="bi bi-table text-info me-2"></i>Option Chain Ladder — {{ symbol }} (Expiry: {{ selected_expiry }})</h5>
+                <span class="badge bg-dark border border-secondary text-secondary">Point-In-Time Snapshot</span>
+            </div>
+            <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+                <table class="table table-custom table-hover text-center">
+                    <thead class="sticky-top">
+                        <tr>
+                            <th colspan="4" class="text-success border-end border-secondary">CALLS</th>
+                            <th class="bg-dark text-info border-end border-start border-secondary">STRIKE</th>
+                            <th colspan="4" class="text-danger border-start border-secondary">PUTS</th>
+                        </tr>
+                        <tr>
+                            <th class="text-secondary">OI</th>
+                            <th class="text-secondary">IV %</th>
+                            <th class="text-secondary">Bid</th>
+                            <th class="text-secondary border-end border-secondary">Ask</th>
+                            <th class="bg-dark text-light border-end border-start border-secondary">Strike (₹)</th>
+                            <th class="text-secondary">Bid</th>
+                            <th class="text-secondary">Ask</th>
+                            <th class="text-secondary">IV %</th>
+                            <th class="text-secondary">OI</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in chain_rows %}
+                        <tr>
+                            <td class="font-monospace">{{ row.call_oi }}</td>
+                            <td class="text-info font-monospace">{{ row.call_iv }}%</td>
+                            <td class="font-monospace text-success">{{ row.call_bid }}</td>
+                            <td class="font-monospace text-success border-end border-secondary">{{ row.call_ask }}</td>
+                            <td class="fw-bold text-light bg-dark border-end border-start border-secondary">{{ row.strike }}</td>
+                            <td class="font-monospace text-danger">{{ row.put_bid }}</td>
+                            <td class="font-monospace text-danger">{{ row.put_ask }}</td>
+                            <td class="text-info font-monospace">{{ row.put_iv }}%</td>
+                            <td class="font-monospace">{{ row.put_oi }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="9" class="text-center text-muted py-4">No option chain quotes available for selected date/expiry.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function updateQuery() {
+        const sym = document.getElementById('symbolSelect').value;
+        const dt = document.getElementById('dateSelect').value;
+        const exp = document.getElementById('expirySelect').value;
+        window.location.href = `?symbol=${sym}&date=${dt}&expiry=${exp}`;
+    }
+
+    async function triggerDataGen() {
+        const sym = document.getElementById('symbolSelect').value;
+        const nDays = document.getElementById('genDays').value;
+        const statusEl = document.getElementById('genStatus');
+
+        statusEl.innerHTML = '<span class="text-info"><i class="bi bi-hourglass-split"></i> Generating data...</span>';
+
+        try {
+            const res = await fetch("{% url 'dashboard:api_generate_data' %}", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ symbol: sym, n_days: parseInt(nDays) })
+            });
+            const data = await res.json();
+            if (data.success) {
+                statusEl.innerHTML = `<span class="text-success"><i class="bi bi-check-circle"></i> ${data.message} Reloading...</span>`;
+                setTimeout(() => window.location.reload(), 1200);
+            } else {
+                statusEl.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle"></i> ${data.error}</span>`;
+            }
+        } catch (e) {
+            statusEl.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle"></i> Network error</span>`;
+        }
+    }
+
+    // Render Spot Candlestick
+    const spotRaw = {{ spot_chart_json|safe }};
+    if (spotRaw.dates && spotRaw.dates.length > 0) {
+        const traceCandle = {
+            x: spotRaw.dates,
+            open: spotRaw.opens,
+            high: spotRaw.highs,
+            low: spotRaw.lows,
+            close: spotRaw.closes,
+            type: 'candlestick',
+            name: 'Spot Price',
+            increasing: { line: { color: '#10b981' } },
+            decreasing: { line: { color: '#f43f5e' } }
+        };
+        const layoutCandle = {
+            plot_bgcolor: '#111827',
+            paper_bgcolor: '#111827',
+            font: { color: '#9ca3af' },
+            margin: { t: 20, r: 20, b: 40, l: 50 },
+            xaxis: { rangeslider: { visible: false }, gridcolor: '#1f2937' },
+            yaxis: { gridcolor: '#1f2937' }
+        };
+        Plotly.newPlot('spotChart', [traceCandle], layoutCandle, { responsive: true, displayModeBar: false });
+    }
+
+    // Render IV Skew Plot
+    const skewRaw = {{ iv_skew_json|safe }};
+    if (skewRaw.strikes && skewRaw.strikes.length > 0) {
+        const traceCallIV = {
+            x: skewRaw.strikes,
+            y: skewRaw.call_ivs,
+            mode: 'lines+markers',
+            name: 'Call IV %',
+            line: { color: '#34d399', width: 2 }
+        };
+        const tracePutIV = {
+            x: skewRaw.strikes,
+            y: skewRaw.put_ivs,
+            mode: 'lines+markers',
+            name: 'Put IV %',
+            line: { color: '#fb7185', width: 2 }
+        };
+        const layoutSkew = {
+            plot_bgcolor: '#111827',
+            paper_bgcolor: '#111827',
+            font: { color: '#9ca3af' },
+            margin: { t: 20, r: 20, b: 40, l: 40 },
+            xaxis: { title: 'Strike (₹)', gridcolor: '#1f2937' },
+            yaxis: { title: 'Implied Volatility (%)', gridcolor: '#1f2937' },
+            legend: { orientation: 'h', y: 1.15 }
+        };
+        Plotly.newPlot('skewChart', [traceCallIV, tracePutIV], layoutSkew, { responsive: true, displayModeBar: false });
+    }
+</script>
+{% endblock %}

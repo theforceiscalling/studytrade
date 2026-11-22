@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+
+{% block title %}Features & Regimes — StudyTrade{% endblock %}
+
+{% block content %}
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-3">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <h4 class="fw-bold mb-1"><i class="bi bi-activity text-info me-2"></i>Quantitative Feature Engineering & Regime Detection</h4>
+                    <p class="small text-secondary mb-0">Underlying: <strong>{{ symbol }}</strong> | Indicators computed point-in-time without future look-ahead.</p>
+                </div>
+                <div class="d-flex gap-2">
+                    {% for sym in symbols %}
+                        <a href="?symbol={{ sym }}" class="btn btn-sm {% if sym == symbol %}btn-cyan{% else %}btn-outline-secondary{% endif %}">{{ sym }}</a>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- GARCH(1,1) & Regime Summary Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-2">
+        <div class="stat-card">
+            <div class="stat-label">GARCH Omega ($\omega$)</div>
+            <div class="stat-val text-info" style="font-size: 1.25rem;">{{ garch_params.omega }}</div>
+            <div class="small text-muted mt-1">Base variance</div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="stat-card">
+            <div class="stat-label">GARCH Alpha ($\alpha$)</div>
+            <div class="stat-val text-warning" style="font-size: 1.25rem;">{{ garch_params.alpha }}</div>
+            <div class="small text-muted mt-1">Shock reaction</div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="stat-card">
+            <div class="stat-label">GARCH Beta ($\beta$)</div>
+            <div class="stat-val text-primary" style="font-size: 1.25rem;">{{ garch_params.beta }}</div>
+            <div class="small text-muted mt-1">Vol memory</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-label">Volatility Persistence ($\alpha + \beta$)</div>
+            <div class="stat-val {% if garch_params.persistence < '1.0' %}text-success{% else %}text-danger{% endif %}" style="font-size: 1.25rem;">
+                {{ garch_params.persistence }}
+            </div>
+            <div class="small text-muted mt-1">Stationary when < 1.0</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-label">Long-Run Annual Vol ($V_L$)</div>
+            <div class="stat-val text-light" style="font-size: 1.25rem;">{{ garch_params.long_run_vol }}</div>
+            <div class="small text-muted mt-1">Unconditional vol target</div>
+        </div>
+    </div>
+</div>
+
+<!-- Regime Classification Distribution -->
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-3">
+            <h6 class="fw-bold text-light mb-2"><i class="bi bi-pie-chart text-info me-2"></i>Observed Volatility & Trend Regimes</h6>
+            <div class="d-flex flex-wrap gap-3">
+                {% for regime, count in regime_counts.items %}
+                    <div class="px-3 py-2 rounded bg-dark border border-secondary">
+                        <span class="badge 
+                            {% if 'BULL' in regime %}bg-success-subtle text-success border border-success-subtle
+                            {% elif 'BEAR' in regime %}bg-danger-subtle text-danger border border-danger-subtle
+                            {% elif 'HIGH_VOL' in regime %}bg-warning-subtle text-warning border border-warning-subtle
+                            {% else %}bg-secondary-subtle text-light border border-secondary-subtle{% endif %}">
+                            {{ regime }}
+                        </span>
+                        <strong class="ms-2 font-monospace">{{ count }} bars</strong>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Indicators Chart -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-3">
+            <h6 class="fw-bold text-light mb-2"><i class="bi bi-graph-up text-info me-2"></i>Spot Price with Donchian Breakout Bands & Dual EMAs</h6>
+            <div id="techChart" style="height: 400px;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Volatility Estimators & GARCH Forecast -->
+<div class="row g-4 mb-4">
+    <div class="col-lg-6">
+        <div class="card-custom p-3 h-100">
+            <h6 class="fw-bold text-light mb-2"><i class="bi bi-water text-info me-2"></i>Realized Volatility Estimators (% Annualized)</h6>
+            <p class="small text-secondary mb-2">Close-to-Close vs Garman-Klass vs Rogers-Satchell</p>
+            <div id="volChart" style="height: 320px;"></div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card-custom p-3 h-100">
+            <h6 class="fw-bold text-light mb-2"><i class="bi bi-cpu text-info me-2"></i>GARCH(1,1) In-Sample Volatility & 10-Bar Forecast</h6>
+            <p class="small text-secondary mb-2">Mean-reverting conditional variance projection</p>
+            <div id="garchChart" style="height: 320px;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Oscillators (RSI & MACD) -->
+<div class="row g-4">
+    <div class="col-12">
+        <div class="card-custom p-3">
+            <h6 class="fw-bold text-light mb-2"><i class="bi bi-bar-chart-line text-info me-2"></i>Momentum Oscillators: Wilder RSI(14) & MACD Histogram</h6>
+            <div id="oscChart" style="height: 300px;"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const data = {{ chart_json|safe }};
+
+    // 1. Tech Chart (Price + EMA + Donchian)
+    const traceClose = { x: data.dates, y: data.closes, name: 'Close', line: { color: '#ffffff', width: 1.5 } };
+    const traceEMAFast = { x: data.dates, y: data.ema_fast, name: 'Fast EMA (20)', line: { color: '#06b6d4', width: 1.5 } };
+    const traceEMASlow = { x: data.dates, y: data.ema_slow, name: 'Slow EMA (50)', line: { color: '#f59e0b', width: 1.5 } };
+    const traceDonchHigh = { x: data.dates, y: data.donchian_high, name: 'Donchian High', line: { color: '#10b981', dash: 'dot', width: 1 } };
+    const traceDonchLow = { x: data.dates, y: data.donchian_low, name: 'Donchian Low', line: { color: '#f43f5e', dash: 'dot', width: 1 } };
+
+    const layoutTech = {
+        plot_bgcolor: '#111827',
+        paper_bgcolor: '#111827',
+        font: { color: '#9ca3af' },
+        margin: { t: 20, r: 20, b: 40, l: 50 },
+        xaxis: { gridcolor: '#1f2937' },
+        yaxis: { gridcolor: '#1f2937' },
+        legend: { orientation: 'h', y: 1.1 }
+    };
+    Plotly.newPlot('techChart', [traceClose, traceEMAFast, traceEMASlow, traceDonchHigh, traceDonchLow], layoutTech, { responsive: true, displayModeBar: false });
+
+    // 2. Volatility Chart
+    const traceCC = { x: data.dates, y: data.rv_cc, name: 'Close-to-Close', line: { color: '#9ca3af', width: 1 } };
+    const traceGK = { x: data.dates, y: data.rv_gk, name: 'Garman-Klass', line: { color: '#06b6d4', width: 1.5 } };
+    const traceRS = { x: data.dates, y: data.rv_rs, name: 'Rogers-Satchell', line: { color: '#10b981', width: 1.5 } };
+    const layoutVol = {
+        plot_bgcolor: '#111827',
+        paper_bgcolor: '#111827',
+        font: { color: '#9ca3af' },
+        margin: { t: 20, r: 20, b: 40, l: 40 },
+        xaxis: { gridcolor: '#1f2937' },
+        yaxis: { title: 'Vol (%)', gridcolor: '#1f2937' },
+        legend: { orientation: 'h', y: 1.15 }
+    };
+    Plotly.newPlot('volChart', [traceCC, traceGK, traceRS], layoutVol, { responsive: true, displayModeBar: false });
+
+    // 3. GARCH Chart
+    const traceGarch = { x: data.dates, y: data.garch_vol, name: 'Fitted Vol', line: { color: '#38bdf8', width: 1.5 } };
+    // Future forecast x dates
+    const forecastDates = [];
+    for (let i = 1; i <= data.garch_forecast.length; i++) {
+        forecastDates.push(`T+${i}`);
+    }
+    const traceForecast = {
+        x: data.dates.slice(-10),
+        y: data.garch_forecast,
+        name: '10-Bar Forecast',
+        mode: 'lines+markers',
+        line: { color: '#f59e0b', width: 2, dash: 'dash' }
+    };
+    const layoutGarch = {
+        plot_bgcolor: '#111827',
+        paper_bgcolor: '#111827',
+        font: { color: '#9ca3af' },
+        margin: { t: 20, r: 20, b: 40, l: 40 },
+        xaxis: { gridcolor: '#1f2937' },
+        yaxis: { title: 'Annualized Vol (%)', gridcolor: '#1f2937' },
+        legend: { orientation: 'h', y: 1.15 }
+    };
+    Plotly.newPlot('garchChart', [traceGarch, traceForecast], layoutGarch, { responsive: true, displayModeBar: false });
+
+    // 4. Oscillators Chart
+    const traceRSI = { x: data.dates, y: data.rsi, name: 'RSI(14)', yaxis: 'y1', line: { color: '#c084fc', width: 1.5 } };
+    const traceMACD = {
+        x: data.dates,
+        y: data.macd_hist,
+        name: 'MACD Hist',
+        yaxis: 'y2',
+        type: 'bar',
+        marker: { color: data.macd_hist.map(v => v >= 0 ? '#10b981' : '#f43f5e') }
+    };
+    const layoutOsc = {
+        plot_bgcolor: '#111827',
+        paper_bgcolor: '#111827',
+        font: { color: '#9ca3af' },
+        margin: { t: 20, r: 40, b: 40, l: 40 },
+        xaxis: { gridcolor: '#1f2937' },
+        yaxis: { title: 'RSI', range: [0, 100], gridcolor: '#1f2937' },
+        yaxis2: { title: 'MACD', overlaying: 'y', side: 'right', gridcolor: 'rgba(0,0,0,0)' },
+        legend: { orientation: 'h', y: 1.15 }
+    };
+    Plotly.newPlot('oscChart', [traceRSI, traceMACD], layoutOsc, { responsive: true, displayModeBar: false });
+</script>
+{% endblock %}

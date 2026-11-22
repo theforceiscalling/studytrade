@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project-specific
+data/raw/
+data/processed/
+data/synthetic/
+logs/
+config/local.yaml
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+.tmp/
+tmp/
