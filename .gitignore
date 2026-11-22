@@ -23,7 +23,7 @@ env/
 
 # Project-specific
 data/raw/
-data/processed/
+# data/processed/ is tracked for complete market data in cloud deployment
 data/synthetic/
 logs/
 config/local.yaml
