@@ -16,7 +16,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -162,16 +162,41 @@ class LiveSessionEngine:
     def get_status(self) -> dict[str, Any]:
         now = datetime.now()
         market_open = self.is_market_open
-        status_text = "SCANNING LIVE" if (self._running and market_open) else (
-            "AWAITING 09:15 AM SESSION" if self._running else "STOPPED"
-        )
+        cur_t = now.time()
+
+        if market_open:
+            next_session_str = "ACTIVE NOW (Closes at 15:30 IST)"
+            status_text = "SCANNING LIVE" if self._running else "MARKET SESSION ACTIVE (IDLE)"
+        else:
+            # Determine date of next trading session (Mon-Fri 09:15)
+            if now.weekday() == 4 and cur_t > MARKET_CLOSE_TIME:  # Friday after 15:30
+                days_ahead = 3  # Next Monday
+            elif now.weekday() == 5:  # Saturday
+                days_ahead = 2  # Next Monday
+            elif now.weekday() == 6:  # Sunday
+                days_ahead = 1  # Tomorrow (Monday)
+            elif cur_t < MARKET_OPEN_TIME:  # Weekday early morning before 09:15
+                days_ahead = 0  # Today at 09:15 AM
+            else:  # Weekday after 15:30 close
+                days_ahead = 1  # Tomorrow at 09:15 AM
+
+            if days_ahead == 0:
+                next_date = now.date()
+                day_label = f"Today ({next_date.strftime('%d-%b-%Y')})"
+            else:
+                next_date = now.date() + timedelta(days=days_ahead)
+                day_label = f"{next_date.strftime('%a, %d-%b-%Y')}"
+
+            next_session_str = f"{day_label} at 09:15 AM IST"
+            status_text = "AWAITING 09:15 AM SESSION" if self._running else f"MARKET CLOSED (Next: {day_label} 09:15 AM)"
+
         return {
             "is_running": self._running,
             "is_market_open": market_open,
             "status_text": status_text,
             "symbol": self.symbol,
             "current_time": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "next_session": "09:15:00 IST",
+            "next_session": next_session_str,
         }
 
     def start(self) -> None:
