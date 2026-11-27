@@ -58,10 +58,28 @@ def run_refresh(data_dir: str | Path = "data", symbols: list[str] | None = None)
     return dict(_last_result)
 
 
+def run_trader_cycle(data_dir: str | Path = "data") -> dict[str, Any] | None:
+    """Square off hit positions and paper-buy any new calibrated signals."""
+    try:
+        from studytrade.paper.auto_trader import get_auto_trader
+
+        report = get_auto_trader(Path(data_dir)).run_cycle()
+        if report["opened_trades"] or report["closed_trades"]:
+            logger.info(
+                "Auto-trader cycle: opened %d, closed %d",
+                len(report["opened_trades"]), len(report["closed_trades"]),
+            )
+        return report
+    except Exception:
+        logger.exception("Auto-trader cycle failed")
+        return None
+
+
 def start_auto_sync(
     data_dir: str | Path = "data",
     symbols: list[str] | None = None,
     interval_seconds: int = 1800,
+    trader_interval_seconds: int = 300,
 ) -> bool:
     """Start the refresher thread once. Returns False if already running."""
     global _thread
@@ -71,9 +89,13 @@ def start_auto_sync(
         _stop.clear()
 
         def _loop() -> None:
+            next_refresh = 0.0
             while not _stop.is_set():
-                run_refresh(data_dir, symbols)
-                _stop.wait(interval_seconds)
+                if time.time() >= next_refresh:
+                    run_refresh(data_dir, symbols)
+                    next_refresh = time.time() + interval_seconds
+                run_trader_cycle(data_dir)
+                _stop.wait(trader_interval_seconds)
 
         _thread = threading.Thread(target=_loop, name="studytrade-auto-sync", daemon=True)
         _thread.start()

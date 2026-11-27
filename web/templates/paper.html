@@ -390,6 +390,66 @@
     </div>
 </div>
 
+<!-- Calibrated Signal Log & P&L -->
+<div class="row g-4 mb-4">
+    <div class="col-12">
+        <div class="card-custom p-4">
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
+                <h5 class="fw-bold mb-0"><i class="bi bi-journal-check text-info me-2"></i>Calibrated Signal Log &amp; P&amp;L</h5>
+                {% if signal_summary %}
+                <div class="d-flex flex-wrap gap-2 small font-monospace">
+                    <span class="badge bg-dark border border-secondary">Signals: {{ signal_summary.total_signals }}</span>
+                    <span class="badge bg-dark border border-secondary">Traded: {{ signal_summary.executed }} ({{ signal_summary.open }} open)</span>
+                    <span class="badge bg-dark border border-secondary">Win rate: {{ signal_summary.win_rate_pct }}%</span>
+                    <span class="badge {% if signal_summary.realized_pnl >= 0 %}bg-success-subtle text-success border border-success-subtle{% else %}bg-danger-subtle text-danger border border-danger-subtle{% endif %}">Realized: ₹{{ signal_summary.realized_pnl|floatformat:2 }}</span>
+                    <span class="badge {% if signal_summary.unrealized_pnl >= 0 %}bg-success-subtle text-success border border-success-subtle{% else %}bg-danger-subtle text-danger border border-danger-subtle{% endif %}">Unrealized: ₹{{ signal_summary.unrealized_pnl|floatformat:2 }}</span>
+                    <span class="badge {% if signal_summary.total_pnl >= 0 %}bg-success text-dark{% else %}bg-danger{% endif %} fw-bold">Total: ₹{{ signal_summary.total_pnl|floatformat:2 }}</span>
+                </div>
+                {% endif %}
+            </div>
+            <div class="small text-muted mb-2">Every new signal is recorded once. Realized P&amp;L is net of statutory charges; unrealized is gross mark-to-market.</div>
+            <div class="table-responsive" style="max-height: 420px; overflow-y: auto;">
+                <table class="table table-custom table-hover text-center align-middle">
+                    <thead class="sticky-top">
+                        <tr>
+                            <th>Logged</th>
+                            <th>Data Date</th>
+                            <th>Direction</th>
+                            <th>Conf.</th>
+                            <th>Contract</th>
+                            <th>Entry (₹)</th>
+                            <th>TP / SL (₹)</th>
+                            <th>Action</th>
+                            <th>Status</th>
+                            <th>P&amp;L (₹)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in signal_log %}
+                        <tr>
+                            <td>{{ s.created_at|slice:"5:16" }}</td>
+                            <td>{{ s.data_date }}</td>
+                            <td>{% if 'CALL' in s.direction %}<span class="badge badge-call">{{ s.direction }}</span>{% else %}<span class="badge badge-put">{{ s.direction }}</span>{% endif %}</td>
+                            <td class="font-monospace">{{ s.confidence_pct }}%</td>
+                            <td class="font-monospace text-light">{{ s.contract|default:"-" }}</td>
+                            <td class="font-monospace">{{ s.entry_price|floatformat:2 }}</td>
+                            <td class="font-monospace"><span class="text-success">{{ s.target_price|floatformat:2 }}</span> / <span class="text-danger">{{ s.stop_loss_price|floatformat:2 }}</span></td>
+                            <td><span class="badge {% if s.action == 'EXECUTED' %}bg-success-subtle text-success border border-success-subtle{% else %}bg-dark border border-secondary text-secondary{% endif %}" title="{{ s.action_detail }}">{{ s.action }}</span></td>
+                            <td>{{ s.status }}{% if s.exit_reason %}<div class="small text-muted">{{ s.exit_reason }}</div>{% endif %}</td>
+                            <td class="font-monospace fw-bold {% if s.pnl is None %}text-muted{% elif s.pnl >= 0 %}text-success{% else %}text-danger{% endif %}">
+                                {% if s.pnl is None %}-{% else %}{{ s.pnl|floatformat:2 }} ({{ s.pnl_pct }}%){% endif %}
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="10" class="text-center text-muted py-4">No calibrated signals recorded yet. They appear here automatically when the auto-trader scans new data.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Paper Trade History -->
 <div class="row g-4">
     <div class="col-12">

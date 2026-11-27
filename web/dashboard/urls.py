@@ -32,6 +32,7 @@ urlpatterns = [
     path("api/paper/auto-trader/configure/", views.api_auto_trader_configure, name="api_auto_trader_configure"),
     path("api/paper/auto-trader/toggle/", views.api_auto_trader_toggle, name="api_auto_trader_toggle"),
     path("api/paper/auto-trader/run-cycle/", views.api_auto_trader_run_cycle, name="api_auto_trader_run_cycle"),
+    path("api/paper/signals/", views.api_paper_signals, name="api_paper_signals"),
     path("api/paper/sync-nse-delayed/", views.api_sync_nse_delayed_prices, name="api_sync_nse_delayed"),
     path("api/live-option-prices/", views.api_live_option_prices, name="api_live_option_prices"),
     path("api/gamma-squeeze/ranks/", views.api_gamma_ranks, name="api_gamma_ranks"),

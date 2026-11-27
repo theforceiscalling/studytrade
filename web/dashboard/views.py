@@ -476,7 +476,15 @@ def paper_view(request: HttpRequest) -> HttpResponse:
     except Exception:
         nse_stats = {}
 
+    try:
+        from studytrade.paper.signal_log import SignalLog
+        signal_log = SignalLog(DATA_DIR / "paper_journal.db").list_with_pnl(limit=100)
+    except Exception:
+        signal_log = {"signals": [], "summary": {}}
+
     context = {
+        "signal_log": signal_log["signals"],
+        "signal_summary": signal_log["summary"],
         "paper_days": paper_days,
         "paper_days_pct": min(100, int((paper_days / 90) * 100)),
         "is_locked": paper_days < 90,
@@ -495,6 +503,15 @@ def paper_view(request: HttpRequest) -> HttpResponse:
         "nse_stats": nse_stats,
     }
     return render(request, "paper.html", context)
+
+
+@require_GET
+def api_paper_signals(request: HttpRequest) -> JsonResponse:
+    """Recorded calibrated signals with the paper P&L each one produced."""
+    from studytrade.paper.signal_log import SignalLog
+
+    limit = min(int(request.GET.get("limit", 100)), 500)
+    return JsonResponse({"success": True, **SignalLog(DATA_DIR / "paper_journal.db").list_with_pnl(limit)})
 
 
 def _get_auto_trader_config() -> dict[str, Any]:

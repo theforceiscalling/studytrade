@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime, time as dtime
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from studytrade.math.bsm import bsm_price
 from studytrade.paper.journal import PaperJournal
 
 logger = logging.getLogger("studytrade.auto_trader")
+_CYCLE_LOCK = threading.Lock()
 
 CONFIG_PATH = Path("data/auto_trader_config.json")
 
@@ -179,18 +181,16 @@ class AutoTrader:
 
     def evaluate_and_auto_buy(self) -> list[dict[str, Any]]:
         """
-        Evaluate live market Strategy Signals and automatically buy eligible
-        high-conviction contracts within capital and risk limits.
+        Record every new calibrated signal and, when limits allow, paper-buy it.
+
+        A signal (underlying + data date + direction) is handled once; later cycles skip it,
+        so a closed position is never re-opened by the same signal.
         """
-        if not self.config.get("enabled", True) or not self.config.get("auto_buy", True):
-            return []
+        auto_buy_on = bool(self.config.get("enabled", True) and self.config.get("auto_buy", True))
 
         open_positions = self.journal.get_open_positions()
         max_pos = int(self.config.get("max_open_positions", 3))
-        if len(open_positions) >= max_pos:
-            return []
 
-        # Check deployed capital against total ₹20,000 capital limit
         total_cap_limit = float(self.config.get("total_capital_limit", 20000.0))
         max_trade_cap = float(self.config.get("max_capital_per_trade", 5000.0))
         deployed_capital = sum(
@@ -198,8 +198,6 @@ class AutoTrader:
             for p in open_positions
         )
         available_capital = max(0.0, total_cap_limit - deployed_capital)
-        if available_capital < 500.0:
-            return []
 
         existing_underlyings = {p.get("underlying_symbol", "") for p in open_positions}
         existing_symbols = {p.get("symbol", "") for p in open_positions}
@@ -208,10 +206,17 @@ class AutoTrader:
         target_delta = float(self.config.get("target_delta", 0.35))
         tp_pct = float(self.config.get("profit_target_pct", 50.0))
         sl_pct = float(self.config.get("stop_loss_pct", 30.0))
+        params = {
+            "target_delta": target_delta,
+            "profit_target_pct": tp_pct,
+            "stop_loss_pct": sl_pct,
+            "min_confidence_pct": min_conf,
+        }
 
         opened_trades: list[dict[str, Any]] = []
 
         from studytrade.data.store import DataStore
+        from studytrade.paper.signal_log import SignalLog
         from studytrade.strategy.signals.gamma_squeeze import GammaSqueezeStrategy
 
         try:
@@ -220,12 +225,9 @@ class AutoTrader:
             from web.dashboard.views import _get_manual_trade_recommendation
 
         store = DataStore(self.data_dir)
+        signal_log = SignalLog(self.journal.db_path)
 
-        for sym in ["NIFTY", "BANKNIFTY"]:
-            # One active position per underlying max to diversify
-            if sym in existing_underlyings:
-                continue
-
+        for sym in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
             try:
                 spot_df = store.load_spot(sym)
                 opt_df = store.load_options(sym)
@@ -236,6 +238,7 @@ class AutoTrader:
                 opt_slice = opt_df[opt_df["timestamp"] == latest_ts]
                 spot_slice = spot_df.tail(10)
                 spot_close = float(spot_df["close"].iloc[-1])
+                data_date = pd.to_datetime(latest_ts).strftime("%Y-%m-%d")
 
                 strat = GammaSqueezeStrategy(
                     target_delta=target_delta,
@@ -243,79 +246,118 @@ class AutoTrader:
                     allow_bearish=True,
                 )
                 raw_sigs = strat.generate_signals(spot_slice, opt_slice)
-                if not raw_sigs:
-                    continue
 
-                best_sig = raw_sigs[0]
-                rec = _get_manual_trade_recommendation(
-                    opt_slice,
-                    best_sig.direction.value,
-                    spot_close,
-                    target_delta=best_sig.target_delta,
-                    profit_target_pct=tp_pct,
-                    stop_loss_pct=sl_pct,
-                    symbol=sym,
-                )
+                for sig in raw_sigs:
+                    direction = sig.direction.value
+                    rec = _get_manual_trade_recommendation(
+                        opt_slice,
+                        direction,
+                        spot_close,
+                        target_delta=sig.target_delta,
+                        profit_target_pct=tp_pct,
+                        stop_loss_pct=sl_pct,
+                        symbol=sym,
+                    ) or {}
+                    c_sym = rec.get("contract_symbol", "")
+                    entry_price = float(rec.get("ask", rec.get("premium", 0.0)) or 0.0)
+                    lot_size = int(rec.get("lot_size", 25))
+                    req_cap = float(rec.get("capital_per_lot", entry_price * lot_size))
+                    expiry = str(opt_slice["expiry"].iloc[0])[:10] if "expiry" in opt_slice.columns else ""
 
-                if not rec or not rec.get("contract_symbol"):
-                    continue
+                    signal_id = signal_log.record_if_new({
+                        "signal_key": signal_log.make_key(sym, data_date, direction),
+                        "data_date": data_date,
+                        "underlying": sym,
+                        "direction": direction,
+                        "confidence_pct": round(sig.strength * 100, 1),
+                        "spot": spot_close,
+                        "contract": c_sym,
+                        "strike": rec.get("strike"),
+                        "expiry": expiry,
+                        "entry_price": entry_price,
+                        "target_price": rec.get("target_price"),
+                        "stop_loss_price": rec.get("stop_loss_price"),
+                        "lot_size": lot_size,
+                        "capital_required": req_cap,
+                        "reason": sig.reason,
+                        "params_json": params,
+                    })
+                    if signal_id is None:
+                        continue  # already seen and handled in an earlier cycle
 
-                c_sym = rec["contract_symbol"]
-                if c_sym in existing_symbols:
-                    continue
+                    skip = None
+                    if not auto_buy_on:
+                        skip = ("LOGGED_AUTO_BUY_OFF", "Auto-buy disabled")
+                    elif not c_sym or entry_price <= 0:
+                        skip = ("SKIPPED_NO_CONTRACT", "No tradable contract found")
+                    elif len(open_positions) + len(opened_trades) >= max_pos:
+                        skip = ("SKIPPED_MAX_POSITIONS", f"Max open positions ({max_pos}) reached")
+                    elif sym in existing_underlyings:
+                        skip = ("SKIPPED_POSITION_OPEN", f"{sym} already has an open position")
+                    elif c_sym in existing_symbols:
+                        skip = ("SKIPPED_DUPLICATE_CONTRACT", "Contract already held")
+                    elif req_cap > max_trade_cap or req_cap > available_capital:
+                        skip = (
+                            "SKIPPED_CAPITAL_LIMIT",
+                            f"Needs ₹{req_cap:.0f}; per-trade cap ₹{max_trade_cap:.0f}, available ₹{available_capital:.0f}",
+                        )
+                    if skip:
+                        signal_log.set_action(signal_id, skip[0], skip[1])
+                        continue
 
-                req_cap = float(rec.get("capital_per_lot", 2500.0))
-                if req_cap > max_trade_cap or req_cap > available_capital:
-                    continue
+                    target_price = float(rec.get("target_price", round(entry_price * (1 + tp_pct / 100.0), 2)))
+                    stop_loss_price = float(rec.get("stop_loss_price", round(entry_price * (1 - sl_pct / 100.0), 2)))
 
-                entry_price = float(rec.get("ask", rec.get("premium", 50.0)))
-                lot_size = int(rec.get("lot_size", 25))
-                target_price = float(rec.get("target_price", round(entry_price * (1 + tp_pct / 100.0), 2)))
-                stop_loss_price = float(rec.get("stop_loss_price", round(entry_price * (1 - sl_pct / 100.0), 2)))
+                    pos_id = self.journal.add_open_position(
+                        symbol=c_sym,
+                        underlying_symbol=sym,
+                        strike=float(rec.get("strike", 0.0)),
+                        expiry=expiry,
+                        option_type="CE" if "CALL" in direction else "PE",
+                        n_lots=1,
+                        lot_size=lot_size,
+                        entry_price=entry_price,
+                        current_price=entry_price,
+                        entry_iv=16.0,
+                        strategy="Auto-Trader (Gamma Squeeze)",
+                        target_price=target_price,
+                        stop_loss_price=stop_loss_price,
+                    )
+                    entry_time = next(
+                        (p["entry_time"] for p in self.journal.get_open_positions() if p["id"] == pos_id), None
+                    )
+                    signal_log.set_action(signal_id, "EXECUTED", "Paper position opened", pos_id, entry_time)
 
-                pos_id = self.journal.add_open_position(
-                    symbol=c_sym,
-                    underlying_symbol=sym,
-                    strike=float(rec.get("strike", 0.0)),
-                    expiry=str(opt_slice["expiry"].iloc[0])[:10] if "expiry" in opt_slice.columns else "",
-                    option_type="CE" if "CALL" in best_sig.direction.value else "PE",
-                    n_lots=1,
-                    lot_size=lot_size,
-                    entry_price=entry_price,
-                    current_price=entry_price,
-                    entry_iv=16.0,
-                    strategy="Auto-Trader (Gamma Squeeze)",
-                    target_price=target_price,
-                    stop_loss_price=stop_loss_price,
-                )
+                    opened_trades.append({
+                        "id": pos_id,
+                        "symbol": c_sym,
+                        "underlying_symbol": sym,
+                        "entry_price": entry_price,
+                        "target_price": target_price,
+                        "stop_loss_price": stop_loss_price,
+                        "lot_size": lot_size,
+                        "confidence": round(sig.strength * 100, 1),
+                        "capital_deployed": req_cap,
+                    })
+                    available_capital -= req_cap
+                    existing_underlyings.add(sym)
+                    existing_symbols.add(c_sym)
 
-                opened = {
-                    "id": pos_id,
-                    "symbol": c_sym,
-                    "underlying_symbol": sym,
-                    "entry_price": entry_price,
-                    "target_price": target_price,
-                    "stop_loss_price": stop_loss_price,
-                    "lot_size": lot_size,
-                    "confidence": round(best_sig.strength * 100, 1),
-                    "capital_deployed": req_cap,
-                }
-                opened_trades.append(opened)
-                deployed_capital += req_cap
-                available_capital -= req_cap
-                existing_underlyings.add(sym)
-                existing_symbols.add(c_sym)
-
-                logger.info("Auto-Trader Executed Buy: %s @ ₹%s | TP: ₹%s | SL: ₹%s", c_sym, entry_price, target_price, stop_loss_price)
-
-                if len(open_positions) + len(opened_trades) >= max_pos:
-                    break
+                    logger.info(
+                        "Auto-Trader Executed Buy: %s @ ₹%s | TP: ₹%s | SL: ₹%s",
+                        c_sym, entry_price, target_price, stop_loss_price,
+                    )
             except Exception as e:
                 logger.error("Error in auto-buy for %s: %s", sym, e)
 
         return opened_trades
 
     def run_cycle(self) -> dict[str, Any]:
+        """Run one autonomous cycle; serialised so the scheduler and manual button never double-trade."""
+        with _CYCLE_LOCK:
+            return self._run_cycle_unlocked()
+
+    def _run_cycle_unlocked(self) -> dict[str, Any]:
         """
         Execute one complete autonomous cycle:
         1. Sync delayed quotes from official NSE option chain.
