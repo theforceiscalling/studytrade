@@ -67,7 +67,7 @@ NIFTY = InstrumentSpec(
 
 BANKNIFTY = InstrumentSpec(
     symbol="BANKNIFTY",
-    lot_size=15,
+    lot_size=30,
     tick_size=0.05,
     strike_interval=100.0,
     max_weekly_expiries=7,
@@ -75,7 +75,7 @@ BANKNIFTY = InstrumentSpec(
 
 FINNIFTY = InstrumentSpec(
     symbol="FINNIFTY",
-    lot_size=25,
+    lot_size=60,
     tick_size=0.05,
     strike_interval=50.0,
     max_weekly_expiries=4,

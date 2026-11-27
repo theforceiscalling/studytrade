@@ -97,7 +97,7 @@ class TestStudyTradeConfig:
         nifty = next(u for u in cfg.market.underlyings if u.symbol == "NIFTY")
         banknifty = next(u for u in cfg.market.underlyings if u.symbol == "BANKNIFTY")
         assert nifty.lot_size == 65
-        assert banknifty.lot_size == 15
+        assert banknifty.lot_size == 30
 
     def test_costs_all_non_negative(self):
         cfg = StudyTradeConfig()

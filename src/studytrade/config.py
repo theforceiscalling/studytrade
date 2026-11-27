@@ -81,7 +81,7 @@ class MarketConfig(BaseModel):
     exchange: str = "NSE"
     underlyings: list[UnderlyingConfig] = [
         UnderlyingConfig(symbol="NIFTY", lot_size=65, tick_size=0.05),
-        UnderlyingConfig(symbol="BANKNIFTY", lot_size=15, tick_size=0.05),
+        UnderlyingConfig(symbol="BANKNIFTY", lot_size=30, tick_size=0.05),
     ]
     trading_hours: TradingHoursConfig = TradingHoursConfig()
     holidays_file: str = ""

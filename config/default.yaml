@@ -23,7 +23,7 @@ market:
       lot_size: 65                  # Verify on NSE circular
       tick_size: 0.05
     - symbol: "BANKNIFTY"
-      lot_size: 15                  # As of 2024; verify on NSE
+      lot_size: 30                  # Verify on NSE circular
       tick_size: 0.05
   trading_hours:
     open: "09:15"

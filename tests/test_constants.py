@@ -20,7 +20,7 @@ class TestInstrumentSpecs:
         assert NIFTY.lot_size == 65
 
     def test_banknifty_lot_size(self):
-        assert BANKNIFTY.lot_size == 15
+        assert BANKNIFTY.lot_size == 30
 
     def test_nifty_strike_interval(self):
         assert NIFTY.strike_interval == 50.0
