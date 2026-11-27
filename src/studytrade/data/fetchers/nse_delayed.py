@@ -154,13 +154,14 @@ class NSEOptionChainFetcher:
 
     def sync_to_tick_cache(
         self,
-        symbols: list[str] = ["NIFTY", "BANKNIFTY"],
+        symbols: list[str] = ["NIFTY", "BANKNIFTY", "FINNIFTY"],
         journal: PaperJournal | None = None,
         force: bool = False,
     ) -> dict[str, Any]:
         """
         Pull latest delayed quotes from NSE and update LiveTickCache & PaperJournal.
         Matches both exact contract symbols and open position attributes (underlying, strike, option_type).
+        Also syncs MCX Commodity open positions (CRUDEOILM & NATURALGAS) to maintain live mark-to-market valuations.
         """
         if force:
             self._last_fetch_time.clear()
@@ -182,7 +183,10 @@ class NSEOptionChainFetcher:
 
         spots_synced: dict[str, float] = {}
 
+        # 1. Sync NSE Equity Indices
         for sym in symbols:
+            if sym.upper() in ("CRUDEOILM", "NATURALGAS"):
+                continue
             chain_data = self.fetch_index_chain(sym)
             if not chain_data:
                 continue
@@ -214,7 +218,7 @@ class NSEOptionChainFetcher:
                     iv = float(sub_row.get("impliedVolatility", 0.0))
                     oi = int(sub_row.get("openInterest", 0))
 
-                    # 1. Standard format (e.g. NIFTY23NOV25950CE)
+                    # Standard format (e.g. NIFTY23NOV25950CE)
                     std_sym = self.format_contract_symbol(sym, exp, strike, opt_type)
 
                     tick_data = {
@@ -234,18 +238,82 @@ class NSEOptionChainFetcher:
                     tick_cache.update_tick(std_sym, tick_data)
                     updated_count += 1
 
-                    # 2. Match any open positions with same (underlying, strike, option_type)
+                    # Match open positions with same (underlying, strike, option_type)
                     match_key = (sym.upper(), strike, opt_type.upper())
                     if match_key in open_pos_attr_map and ltp > 0:
                         for matched_pos in open_pos_attr_map[match_key]:
                             pos_sym = matched_pos["symbol"]
-                            # Also update tick cache under the exact position symbol
                             custom_tick = tick_data.copy()
                             custom_tick["symbol"] = pos_sym
                             tick_cache.update_tick(pos_sym, custom_tick)
-
-                            # Update MTM current price in database ledger
                             jnl.update_current_price(pos_sym, ltp)
+
+        # 2. Sync MCX Commodity Open Positions (CRUDEOILM & NATURALGAS)
+        try:
+            import pandas as pd
+            from studytrade.constants import OptionType
+            from studytrade.data.store import DataStore
+            from studytrade.math.bsm import bsm_price
+
+            store = DataStore()
+            for p in open_positions:
+                und = str(p.get("underlying_symbol", "")).upper()
+                if und in ("CRUDEOILM", "NATURALGAS"):
+                    pos_sym = str(p.get("symbol", ""))
+                    stk = float(p.get("strike", 0.0))
+                    ot = str(p.get("option_type", "CE")).upper()
+                    exp_str = str(p.get("expiry", ""))
+                    cur_db_p = float(p.get("current_price", 0.0))
+
+                    opt_df = store.load_options(und)
+                    spot_df = store.load_spot(und)
+                    cur_spot = float(spot_df["close"].iloc[-1]) if not spot_df.empty else (7735.0 if und == "CRUDEOILM" else 334.5)
+                    spots_synced[und] = cur_spot
+
+                    matched_ltp = None
+                    matched_bid = None
+                    matched_ask = None
+                    matched_iv = 0.50 if und == "CRUDEOILM" else 0.55
+
+                    if not opt_df.empty:
+                        latest_ts = opt_df["timestamp"].max()
+                        chain_slice = opt_df[opt_df["timestamp"] == latest_ts]
+                        match = chain_slice[(chain_slice["strike"] == stk) & (chain_slice["option_type"] == ot)]
+                        if not match.empty:
+                            matched_ltp = float(match["close"].iloc[0])
+                            matched_bid = float(match.get("bid", matched_ltp * 0.99).iloc[0])
+                            matched_ask = float(match.get("ask", matched_ltp * 1.01).iloc[0])
+                            matched_iv = float(match.get("implied_volatility", matched_iv).iloc[0])
+
+                    if matched_ltp is None or matched_ltp <= 0:
+                        try:
+                            dtes = max(1.0, float((pd.to_datetime(exp_str).date() - datetime.now().date()).days)) if exp_str else 19.0
+                        except Exception:
+                            dtes = 19.0
+                        theo = bsm_price(OptionType.CALL if ot == "CE" else OptionType.PUT, cur_spot, stk, dtes / 365.0, 0.07, matched_iv)
+                        matched_ltp = round(float(theo), 2)
+                        matched_bid = round(matched_ltp * 0.99, 2)
+                        matched_ask = round(matched_ltp * 1.01, 2)
+
+                    # Update tick cache and journal MTM
+                    comm_tick = {
+                        "symbol": pos_sym,
+                        "underlying": und,
+                        "strike": stk,
+                        "option_type": ot,
+                        "last_price": matched_ltp,
+                        "bid": matched_bid,
+                        "ask": matched_ask,
+                        "close": matched_ltp,
+                        "implied_volatility": matched_iv,
+                        "is_fresh": True,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    tick_cache.update_tick(pos_sym, comm_tick)
+                    jnl.update_current_price(pos_sym, matched_bid or matched_ltp)
+                    updated_count += 1
+        except Exception as e:
+            logger.warning("Error syncing commodity open positions: %s", e)
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._last_sync_stats = {

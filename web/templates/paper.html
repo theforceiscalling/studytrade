@@ -16,10 +16,10 @@
                         <i class="bi bi-cash-stack me-1 text-success"></i> Initial Capital: ₹{{ initial_capital|floatformat:0 }}
                     </span>
                     <span class="badge bg-dark border border-secondary px-3 py-2 text-light">
-                        <i class="bi bi-pie-chart me-1 text-info"></i> Deployed: ₹{{ deployed_capital }}
+                        <i class="bi bi-pie-chart me-1 text-info"></i> Deployed: <span id="deployedCapitalVal">₹{{ deployed_capital }}</span>
                     </span>
                     <span class="badge bg-dark border border-secondary px-3 py-2 text-light">
-                        <i class="bi bi-wallet2 me-1 text-warning"></i> Available: ₹{{ available_capital }}
+                        <i class="bi bi-wallet2 me-1 text-warning"></i> Available: <span id="availableCapitalVal">₹{{ available_capital }}</span>
                     </span>
                     <button id="btnSyncBhavcopy" class="btn btn-sm btn-outline-info" onclick="syncOfficialBhavcopy()">
                         <i class="bi bi-cloud-arrow-down me-1"></i> Sync Official Bhavcopy
@@ -323,11 +323,14 @@
                 </div>
                 <div class="d-flex align-items-center gap-2">
                     <span id="nseSyncStatusBadge" class="badge bg-success-subtle text-success border border-success-subtle py-1 px-2 font-monospace small">
-                        <i class="bi bi-broadcast me-1"></i>NSE Delayed Feed: Active
+                        <i class="bi bi-broadcast me-1"></i>Market Feed: Active
                         {% if nse_stats.last_synced %}({{ nse_stats.last_synced|slice:"11:19" }}){% endif %}
                     </span>
-                    <button id="btnSyncNse" class="btn btn-sm btn-outline-info px-3" onclick="syncNsePrices(this)">
-                        <i class="bi bi-arrow-repeat me-1"></i> Sync NSE Prices
+                    <span class="badge bg-dark border border-secondary text-info font-monospace py-1 px-2 small">
+                        <i class="bi bi-stopwatch me-1"></i>Auto-Refresh: <span id="autoSyncCountdown">15s</span>
+                    </span>
+                    <button id="btnSyncNse" class="btn btn-sm btn-outline-info px-3" onclick="syncMarketPrices(this)">
+                        <i class="bi bi-arrow-repeat me-1"></i> Sync Market Prices (NSE & MCX)
                     </button>
                 </div>
             </div>
@@ -361,14 +364,14 @@
                             </td>
                             <td class="font-monospace">{{ pos.strike }}</td>
                             <td>{{ pos.expiry|slice:":10" }}</td>
-                            <td class="font-monospace">{{ pos.quantity }}</td>
+                            <td class="font-monospace">{{ pos.n_lots|default:1 }}</td>
                             <td class="font-monospace text-muted">₹{{ pos.entry_price|floatformat:2 }}</td>
-                            <td class="font-monospace fw-bold text-light">₹{{ pos.current_price|floatformat:2 }}</td>
+                            <td id="pos-ltp-{{ pos.id }}" class="font-monospace fw-bold text-light">₹{{ pos.current_price|floatformat:2 }}</td>
                             <td class="font-monospace text-success fw-bold">₹{{ pos.target_price|floatformat:2 }}</td>
                             <td class="font-monospace text-danger fw-bold">₹{{ pos.stop_loss_price|floatformat:2 }}</td>
-                            <td class="font-monospace">
-                                <span class="badge {% if pos.pnl_pct >= 0 %}bg-success-subtle text-success border border-success-subtle{% else %}bg-danger-subtle text-danger border border-danger-subtle{% endif %} px-2 py-1">
-                                    {% if pos.unrealized_pnl >= 0 %}+{% endif %}₹{{ pos.unrealized_pnl|floatformat:2 }} ({{ pos.pnl_pct }}%)
+                            <td id="pos-pnl-{{ pos.id }}" class="font-monospace">
+                                <span class="badge {% if pos.unrealized_pnl >= 0 %}bg-success-subtle text-success border border-success-subtle{% else %}bg-danger-subtle text-danger border border-danger-subtle{% endif %} px-2 py-1">
+                                    {% if pos.unrealized_pnl >= 0 %}+{% endif %}₹{{ pos.unrealized_pnl|floatformat:2 }} ({{ pos.unrealized_pnl_pct }}%)
                                 </span>
                             </td>
                             <td>
@@ -714,29 +717,91 @@ async function onPaperRankSelect(sel) {
     await saveAutoTraderConfig();
 }
 
-async function syncNsePrices(btn) {
-    const originalText = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Fetching NSE Chain...';
+async function syncMarketPrices(btn, isQuiet = false) {
+    if (window._isSyncingPrices) return;
+    window._isSyncingPrices = true;
+
+    let originalText = "";
+    if (btn) {
+        originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Syncing...';
+    }
+
     try {
         const res = await fetch("{% url 'dashboard:api_sync_nse_delayed' %}", {
             method: "POST",
             headers: { "Content-Type": "application/json" }
         });
         const data = await res.json();
-        if (data.success) {
-            console.log("NSE Delayed Price Sync Success:", data);
-            window.location.reload();
-        } else {
-            alert("Error syncing NSE option chain: " + (data.error || "Unknown error"));
+        if (data.success && data.stats) {
+            const stats = data.stats;
+
+            // Update capital metrics dynamically
+            const depEl = document.getElementById('deployedCapitalVal');
+            if (depEl && stats.deployed_capital !== undefined) {
+                depEl.textContent = `₹${Number(stats.deployed_capital).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            }
+            const availEl = document.getElementById('availableCapitalVal');
+            if (availEl && stats.available_capital !== undefined) {
+                availEl.textContent = `₹${Number(stats.available_capital).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            }
+
+            // Update open position rows smoothly without reloading page
+            if (Array.isArray(stats.positions)) {
+                stats.positions.forEach(pos => {
+                    const ltpEl = document.getElementById(`pos-ltp-${pos.id}`);
+                    if (ltpEl) {
+                        ltpEl.textContent = `₹${Number(pos.current_price).toFixed(2)}`;
+                    }
+                    const pnlEl = document.getElementById(`pos-pnl-${pos.id}`);
+                    if (pnlEl) {
+                        const isPos = pos.unrealized_pnl >= 0;
+                        const sign = isPos ? '+' : '';
+                        pnlEl.innerHTML = `<span class="badge ${isPos ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-danger-subtle text-danger border border-danger-subtle'} px-2 py-1">` +
+                                          `${sign}₹${Number(pos.unrealized_pnl).toFixed(2)} (${pos.unrealized_pnl_pct}%)</span>`;
+                    }
+                });
+            }
+
+            // Update market feed status badge
+            const badge = document.getElementById('nseSyncStatusBadge');
+            if (badge) {
+                const nowTime = new Date().toLocaleTimeString('en-IN', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                badge.className = "badge bg-success-subtle text-success border border-success-subtle py-1 px-2 font-monospace small";
+                badge.innerHTML = `<i class="bi bi-broadcast me-1"></i>Market Feed: Active (${nowTime})`;
+            }
+        } else if (!isQuiet) {
+            alert("Error syncing market prices: " + (data.error || "Unknown error"));
         }
     } catch (err) {
-        alert("Failed to connect to NSE sync endpoint: " + err);
+        if (!isQuiet) console.warn("Failed to connect to market sync: " + err);
     } finally {
-        btn.disabled = false;
-        btn.innerHTML = originalText;
+        window._isSyncingPrices = false;
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
     }
 }
+
+// 15-second non-blocking auto-updater for market prices
+let syncCountdown = 15;
+setInterval(() => {
+    const cdEl = document.getElementById('autoSyncCountdown');
+    if (!cdEl) return;
+    syncCountdown--;
+    if (syncCountdown <= 0) {
+        syncCountdown = 15;
+        cdEl.textContent = "Updating...";
+        syncMarketPrices(null, true).then(() => {
+            syncCountdown = 15;
+            cdEl.textContent = `${syncCountdown}s`;
+        });
+    } else {
+        cdEl.textContent = `${syncCountdown}s`;
+    }
+}, 1000);
 
 async function recalibratePaperToRank1() {
     const sel = document.getElementById('paperStrategyRankSelect');

@@ -38,3 +38,9 @@ tmp/
 
 data/.auto_sync.lock
 data/processed/**/*.tmp
+
+data/paper_journal.db
+data/paper_journal.db*
+data/live_signals.db
+data/live_signals.db*
+data/bhavcopy/

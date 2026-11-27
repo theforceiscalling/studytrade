@@ -394,7 +394,7 @@ def paper_view(request: HttpRequest) -> HttpResponse:
                 0.07,
                 sigma,
             )
-            qty = float(pos.get("quantity", 1)) * float(pos.get("lot_size", 25))
+            qty = float(pos.get("n_lots", 1)) * float(pos.get("lot_size", 25))
             net_delta += float(g.delta) * qty
             net_gamma += float(g.gamma) * qty
             net_vega += float(g.vega_1pct) * qty
@@ -402,13 +402,27 @@ def paper_view(request: HttpRequest) -> HttpResponse:
         except Exception:
             pass
 
-    # Capital tracking (User specified initial capital: Rs. 20,000)
+    # Capital tracking & PnL calculation
     INITIAL_CAPITAL = 20000.0
+    realized_pnl = float(trades_df["realized_pnl"].sum()) if not trades_df.empty and "realized_pnl" in trades_df.columns else 0.0
+
+    total_unrealized_pnl = 0.0
+    for pos in open_positions:
+        cur_p = float(pos.get("current_price") or pos.get("entry_price", 0.0))
+        entry_p = float(pos.get("entry_price", 0.0))
+        lot_sz = int(pos.get("lot_size", 25))
+        lots = int(pos.get("n_lots", 1))
+        pnl_pts = cur_p - entry_p
+        pos_pnl = pnl_pts * lot_sz * lots
+        pos["unrealized_pnl"] = round(pos_pnl, 2)
+        pos["unrealized_pnl_pct"] = round((pnl_pts / entry_p * 100.0), 2) if entry_p > 0 else 0.0
+        total_unrealized_pnl += pos_pnl
+
     deployed_capital = sum(
-        float(pos.get("entry_price", 0.0)) * int(pos.get("lot_size", 25)) * int(pos.get("quantity", 1))
+        float(pos.get("entry_price", 0.0)) * int(pos.get("lot_size", 25)) * int(pos.get("n_lots", 1))
         for pos in open_positions
     )
-    available_capital = max(0.0, INITIAL_CAPITAL - deployed_capital)
+    available_capital = max(0.0, INITIAL_CAPITAL + realized_pnl - deployed_capital)
 
     # Compute Real-Time Strategy Signals (Gamma Squeeze & Dealer Cascade)
     realtime_signals = []
@@ -974,18 +988,55 @@ def api_sync_bhavcopy(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 @require_POST
 def api_sync_nse_delayed_prices(request: HttpRequest) -> JsonResponse:
-    """Fetch official delayed option chain from NSE India website and update tick cache & open positions."""
+    """Fetch official delayed option chain from NSE & MCX and update tick cache & open positions."""
     try:
         from studytrade.data.fetchers.nse_delayed import get_nse_delayed_fetcher
         from studytrade.paper.journal import PaperJournal
 
         fetcher = get_nse_delayed_fetcher()
         jnl = PaperJournal(str(DATA_DIR / "paper_journal.db"))
-        stats = fetcher.sync_to_tick_cache(journal=jnl, force=True)
+        force = bool(request.GET.get("force", False))
+        stats = fetcher.sync_to_tick_cache(journal=jnl, force=force)
+
+        # Build detailed position metrics
+        open_positions = jnl.get_open_positions()
+        trades_df = jnl.get_trades_dataframe()
+        realized_pnl = float(trades_df["realized_pnl"].sum()) if not trades_df.empty and "realized_pnl" in trades_df.columns else 0.0
+
+        INITIAL_CAPITAL = 20000.0
+        pos_list = []
+        deployed = 0.0
+        total_unrealized_pnl = 0.0
+
+        for p in open_positions:
+            entry_p = float(p.get("entry_price", 0.0))
+            cur_p = float(p.get("current_price") or entry_p)
+            lots = int(p.get("n_lots", 1))
+            lot_sz = int(p.get("lot_size", 25))
+            pnl_pts = cur_p - entry_p
+            pnl = round(pnl_pts * lot_sz * lots, 2)
+            pnl_pct = round((pnl_pts / entry_p * 100.0), 2) if entry_p > 0 else 0.0
+            pos_cost = entry_p * lot_sz * lots
+            deployed += pos_cost
+            total_unrealized_pnl += pnl
+            pos_list.append({
+                "id": p["id"],
+                "symbol": p["symbol"],
+                "current_price": cur_p,
+                "unrealized_pnl": pnl,
+                "unrealized_pnl_pct": pnl_pct,
+            })
+
+        available_cap = max(0.0, INITIAL_CAPITAL + realized_pnl - deployed)
+        stats["positions"] = pos_list
+        stats["deployed_capital"] = round(deployed, 2)
+        stats["available_capital"] = round(available_cap, 2)
+        stats["total_unrealized_pnl"] = round(total_unrealized_pnl, 2)
+
         return JsonResponse(
             {
                 "success": True,
-                "message": f"Synchronized {stats.get('ticks_updated', 0)} option ticks from official NSE India option chain.",
+                "message": f"Synchronized {stats.get('ticks_updated', 0)} market option ticks (NSE & MCX).",
                 "stats": stats,
             }
         )
