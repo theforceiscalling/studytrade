@@ -37,6 +37,9 @@ ml = [
     "scikit-learn>=1.3",
     "hmmlearn>=0.3",           # Hidden Markov Models
 ]
+gsquant = [
+    "gs-quant>=2.3",           # Goldman Sachs quant timeseries analytics (offline use)
+]
 broker = [
     "kiteconnect>=5.0",        # Zerodha Kite
 ]

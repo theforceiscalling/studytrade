@@ -35,7 +35,13 @@ class NSEOptionChainFetcher:
     BASE_URL = "https://www.nseindia.com"
     CHAIN_PAGE = "https://www.nseindia.com/option-chain"
     CONTRACT_INFO_API = "https://www.nseindia.com/api/option-chain-contract-info?symbol={symbol}"
-    CHAIN_V3_API = "https://www.nseindia.com/api/option-chain-v3?type=Indices&symbol={symbol}&expiry={expiry}"
+    CHAIN_V3_API = "https://www.nseindia.com/api/option-chain-v3?type={chain_type}&symbol={symbol}&expiry={expiry}"
+    INDEX_SYMBOLS = frozenset({"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"})
+
+    @classmethod
+    def chain_type(cls, symbol: str) -> str:
+        """NSE distinguishes index ('Indices') and stock ('Equity') option chains."""
+        return "Indices" if symbol.upper() in cls.INDEX_SYMBOLS else "Equity"
 
     def __init__(self, cache_ttl_seconds: int = 45) -> None:
         self.cache_ttl_seconds = cache_ttl_seconds
@@ -90,9 +96,10 @@ class NSEOptionChainFetcher:
         Respects `cache_ttl_seconds` to prevent excessive requests to NSE.
         """
         now = time.time()
+        cache_key = f"{symbol}|{expiry or ''}"
         # Return cached result if within TTL
-        if symbol in self._last_fetch_time and (now - self._last_fetch_time[symbol]) < self.cache_ttl_seconds:
-            return self._cached_results.get(symbol)
+        if cache_key in self._last_fetch_time and (now - self._last_fetch_time[cache_key]) < self.cache_ttl_seconds:
+            return self._cached_results.get(cache_key)
 
         sess = self._get_session()
         try:
@@ -119,7 +126,9 @@ class NSEOptionChainFetcher:
                 return None
 
             # Fetch Option Chain v3
-            chain_url = self.CHAIN_V3_API.format(symbol=symbol, expiry=target_expiry)
+            chain_url = self.CHAIN_V3_API.format(
+                chain_type=self.chain_type(symbol), symbol=symbol, expiry=target_expiry
+            )
             r_chain = sess.get(chain_url, timeout=12)
             if r_chain.status_code != 200:
                 logger.warning(f"NSE chain API returned status {r_chain.status_code} for {symbol}")
@@ -136,8 +145,8 @@ class NSEOptionChainFetcher:
                 "timestamp": records.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "strikes": records.get("data", []),
             }
-            self._last_fetch_time[symbol] = now
-            self._cached_results[symbol] = result
+            self._last_fetch_time[cache_key] = now
+            self._cached_results[cache_key] = result
             return result
         except Exception as exc:
             logger.error(f"Error fetching NSE option chain for {symbol}: {exc}")

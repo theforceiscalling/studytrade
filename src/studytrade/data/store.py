@@ -9,6 +9,7 @@ SQLite for fast catalog metadata lookups.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,16 @@ import pyarrow.parquet as pq
 
 from studytrade.constants import TIMEZONE
 from studytrade.data.schemas import OPTION_COLUMNS, SPOT_COLUMNS
+
+
+def _atomic_write_parquet(table: pa.Table, file_path: Path) -> None:
+    """Write via a temp file + rename so concurrent readers never see a partial file."""
+    tmp_path = file_path.with_name(f"{file_path.name}.{os.getpid()}.tmp")
+    try:
+        pq.write_table(table, tmp_path, compression="snappy")
+        os.replace(tmp_path, file_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 class DataStore:
@@ -72,7 +83,7 @@ class DataStore:
 
         # Write Parquet with snappy compression
         table = pa.Table.from_pandas(df[SPOT_COLUMNS])
-        pq.write_table(table, file_path, compression="snappy")
+        _atomic_write_parquet(table, file_path)
 
         # Update SQLite catalog
         start_date = str(df["timestamp"].min())
@@ -149,7 +160,7 @@ class DataStore:
         file_path = out_dir / "options.parquet"
 
         table = pa.Table.from_pandas(df[OPTION_COLUMNS])
-        pq.write_table(table, file_path, compression="snappy")
+        _atomic_write_parquet(table, file_path)
 
         start_date = str(df["timestamp"].min())
         end_date = str(df["timestamp"].max())

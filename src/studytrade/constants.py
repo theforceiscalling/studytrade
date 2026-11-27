@@ -59,7 +59,7 @@ class InstrumentSpec:
 # Standard NSE instruments (verify lot sizes against latest circular)
 NIFTY = InstrumentSpec(
     symbol="NIFTY",
-    lot_size=25,
+    lot_size=65,
     tick_size=0.05,
     strike_interval=50.0,
     max_weekly_expiries=7,

@@ -17,7 +17,7 @@ class TestInstrumentSpecs:
     """Verify instrument specifications."""
 
     def test_nifty_lot_size(self):
-        assert NIFTY.lot_size == 25
+        assert NIFTY.lot_size == 65
 
     def test_banknifty_lot_size(self):
         assert BANKNIFTY.lot_size == 15
@@ -49,7 +49,7 @@ class TestCostSchedule:
         Verify total cost calculation is realistic.
         """
         costs = DEFAULT_COSTS
-        lot_size = NIFTY.lot_size  # 25
+        lot_size = NIFTY.lot_size  # 65
         n_lots = 1
 
         buy_premium = 150.0
@@ -68,13 +68,13 @@ class TestCostSchedule:
 
         total_cost = brokerage + stt + exchange_txn + sebi_fee + gst + stamp_duty
 
-        # Gross P&L: (200 - 150) × 25 = ₹1,250
+        # Gross P&L: (200 - 150) × 65 = ₹3,250
         gross_pnl = (sell_premium - buy_premium) * lot_size * n_lots
 
         # Net P&L should be meaningfully less
         net_pnl = gross_pnl - total_cost
 
-        assert gross_pnl == 1250.0
+        assert gross_pnl == 3250.0
         assert total_cost > 50  # Costs are non-trivial
         assert total_cost < 100  # But not absurd for this size
         assert net_pnl < gross_pnl  # Costs eat into profits

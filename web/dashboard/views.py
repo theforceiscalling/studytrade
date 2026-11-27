@@ -426,15 +426,7 @@ def paper_view(request: HttpRequest) -> HttpResponse:
             spot_close = float(spot_df["close"].iloc[-1])
 
             from studytrade.strategy.signals.gamma_squeeze import GammaSqueezeStrategy
-            try:
-                from studytrade.paper.auto_trader import AutoTrader
-                trader_cfg = AutoTrader.load_config()
-                cfg_delta = float(trader_cfg.get("target_delta", 0.35))
-                cfg_tp = float(trader_cfg.get("profit_target_pct", 50.0))
-                cfg_sl = float(trader_cfg.get("stop_loss_pct", 30.0))
-                cfg_thresh = float(trader_cfg.get("min_confidence_pct", 50.0))
-            except Exception:
-                cfg_delta, cfg_tp, cfg_sl, cfg_thresh = 0.35, 50.0, 30.0, 50.0
+            cfg_delta, cfg_tp, cfg_sl, cfg_thresh = _trader_defaults()
 
             # Use calibrated optimal settings: Target Delta 0.35 (or user config), 50% TP, 30% SL
             strat = GammaSqueezeStrategy(
@@ -668,6 +660,35 @@ def api_gamma_ranks(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"success": True, "ranks": ranks})
 
 
+@require_GET
+def api_gamma_auto_calibrate_status(request: HttpRequest) -> JsonResponse:
+    from studytrade.strategy.calibration import get_calibration_status
+
+    return JsonResponse({"success": True, **get_calibration_status()})
+
+
+@csrf_exempt
+@require_POST
+def api_gamma_auto_calibrate(request: HttpRequest) -> JsonResponse:
+    """Start a data-driven (walk-forward) recalibration on the latest stored data."""
+    try:
+        from studytrade.strategy.calibration import start_calibration_job
+
+        body = json.loads(request.body.decode("utf-8")) if request.body else {}
+        symbol = str(body.get("symbol", "NIFTY")).upper()
+        if symbol not in INSTRUMENTS:
+            return JsonResponse({"success": False, "error": f"Unknown symbol {symbol}"}, status=400)
+        started = start_calibration_job(
+            DATA_DIR,
+            symbol=symbol,
+            lookback_days=int(body.get("lookback_days", 180)),
+            apply=bool(body.get("apply", True)),
+        )
+        return JsonResponse({"success": True, "started": started})
+    except Exception as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=500)
+
+
 @csrf_exempt
 @require_POST
 def api_gamma_calibrate(request: HttpRequest) -> JsonResponse:
@@ -682,8 +703,8 @@ def api_gamma_calibrate(request: HttpRequest) -> JsonResponse:
         sync_auto_trader = bool(body.get("sync_auto_trader", True))
 
         if sync_auto_trader:
-            from studytrade.paper.auto_trader import AutoTrader
-            trader = AutoTrader()
+            from studytrade.paper.auto_trader import get_auto_trader
+            trader = get_auto_trader(DATA_DIR)
             trader.save_config({
                 "target_delta": target_delta,
                 "profit_target_pct": profit_target_pct,
@@ -807,7 +828,7 @@ def api_paper_buy_signal(request: HttpRequest) -> JsonResponse:
         option_type = str(body.get("option_type", "CE")).strip().upper()
         entry_price = float(body.get("entry_price", 0.0))
         n_lots = int(body.get("n_lots", 1))
-        lot_size = int(body.get("lot_size", 25))
+        lot_size = int(body.get("lot_size", 65))
         entry_iv = float(body.get("entry_iv", 16.0))
         strategy = str(body.get("strategy", "Gamma Squeeze Real-Time Signal"))
 
@@ -914,12 +935,18 @@ def api_sync_bhavcopy(request: HttpRequest) -> JsonResponse:
             stats["status"] = "success"
             stats["resolved_date"] = str(target_date)
         else:
-            stats = importer.sync_latest_trading_day(symbols=symbols)
+            stats = importer.sync_missing_days(symbols=symbols)
+            stats["resolved_date"] = stats["checked_through"]
+            stats["status"] = "success"
 
         return JsonResponse(
             {
                 "success": True,
-                "message": f"Successfully synchronized official NSE Bhavcopy for {stats.get('resolved_date')}. Row counts: {stats.get('row_counts', {})}.",
+                "message": (
+                    f"Synced {stats['synced']}; no data yet for {stats['skipped']}."
+                    if "synced" in stats
+                    else f"Successfully synchronized official NSE Bhavcopy for {stats.get('resolved_date')}. Row counts: {stats.get('row_counts', {})}."
+                ),
                 "stats": stats,
             }
         )
@@ -945,6 +972,29 @@ def api_sync_nse_delayed_prices(request: HttpRequest) -> JsonResponse:
                 "stats": stats,
             }
         )
+    except Exception as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=500)
+
+
+@require_GET
+def api_live_option_prices(request: HttpRequest) -> JsonResponse:
+    """Live priced NSE option chain (index or stock) with theoretical value and Greeks."""
+    try:
+        from studytrade.live.pricing import DEFAULT_RISK_FREE, get_live_option_prices
+
+        symbol = request.GET.get("symbol", "NIFTY")
+        if not symbol.replace("&", "").replace("-", "").isalnum():
+            return JsonResponse({"success": False, "error": "Invalid symbol"}, status=400)
+        window = request.GET.get("window", "10")
+        data = get_live_option_prices(
+            symbol=symbol,
+            expiry=request.GET.get("expiry") or None,
+            risk_free=float(request.GET.get("risk_free", DEFAULT_RISK_FREE)),
+            strikes_around_atm=None if window == "all" else int(window),
+        )
+        return JsonResponse({"success": True, **data})
+    except (ValueError, RuntimeError) as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=502 if isinstance(exc, RuntimeError) else 400)
     except Exception as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=500)
 
@@ -1414,12 +1464,13 @@ def _get_manual_trade_recommendation(
         return {}
 
     lot_size = INSTRUMENTS.get(symbol, INSTRUMENTS["NIFTY"]).lot_size
-    best_diff = float("inf")
+    from studytrade.math.greeks import greeks
+
+    best_score = float("inf")
     best_row = None
     best_delta = 0.5
     for _, r in df.iterrows():
         try:
-            from studytrade.math.greeks import greeks
             if "expiry" in r and "timestamp" in r:
                 exp_d = pd.to_datetime(r["expiry"]).date()
                 cur_d = pd.to_datetime(r["timestamp"]).date()
@@ -1435,12 +1486,18 @@ def _get_manual_trade_recommendation(
                 0.07,
                 float(r.get("implied_volatility", 0.16)),
             )
-            d = abs(g.delta)
+            d = abs(float(g.delta))
         except Exception:
             d = 0.5
-        diff = abs(d - target_delta)
-        if diff < best_diff:
-            best_diff = diff
+        mid = (float(r.get("bid", 0.0)) + float(r.get("ask", 0.0))) / 2.0
+        spread_pct = (float(r.get("ask", 0.0)) - float(r.get("bid", 0.0))) / mid * 100.0 if mid > 0 else 100.0
+        # Delta fit dominates; illiquid, wide-spread or near-worthless contracts are penalised
+        score = abs(d - target_delta)
+        score += min(spread_pct, 20.0) / 100.0
+        score += 0.15 if float(r.get("open_interest", 0) or 0) <= 0 else 0.0
+        score += 0.15 if float(r.get("close", 0.0)) < 1.0 else 0.0
+        if score < best_score:
+            best_score = score
             best_row = r
             best_delta = d
 
@@ -1458,14 +1515,49 @@ def _get_manual_trade_recommendation(
         prem = float(tick["last_price"])
         bid = float(tick.get("bid", prem - 0.20))
         ask = float(tick.get("ask", prem + 0.20))
+        quote_source = "live" if tick.get("is_fresh") and tick.get("bid") and tick.get("ask") else "estimated"
     else:
         prem = float(best_row["close"])
         ask = float(best_row.get("ask", prem + 0.5))
         bid = float(best_row.get("bid", prem - 0.5))
+        # Bhavcopy has no quotes; bid/ask are modelled around the settlement price
+        quote_source = "estimated"
 
     strike = float(best_row["strike"])
+    entry = ask if ask > 0 else prem
     target_mult = 1.0 + (profit_target_pct / 100.0)
     sl_mult = max(0.0, 1.0 - (stop_loss_pct / 100.0))
+    spread_pct = round((ask - bid) / prem * 100.0, 2) if prem > 0 else 0.0
+    oi = int(best_row.get("open_interest", 0) or 0)
+
+    # First-order (delta/theta) sensitivities at the chosen contract
+    try:
+        if "expiry" in best_row and "timestamp" in best_row:
+            days = max(1.0, float((pd.to_datetime(best_row["expiry"]).date() - pd.to_datetime(best_row["timestamp"]).date()).days))
+        else:
+            days = 3.5
+        g = greeks(
+            OptionType.CALL if opt_type == "CE" else OptionType.PUT,
+            spot_price, strike, days / 365.0, 0.07,
+            float(best_row.get("implied_volatility", 0.16)), calendar_days=True,
+        )
+        theta_daily = abs(float(g.theta_daily))
+    except Exception:
+        theta_daily = 0.0
+    delta_abs = max(best_delta, 1e-6)
+    move_for_target = entry * (profit_target_pct / 100.0) / delta_abs
+    move_for_decay = theta_daily / delta_abs
+    warnings = []
+    if quote_source == "estimated":
+        warnings.append("Bid/ask are modelled from the settlement price, not a live quote")
+    if spread_pct > 5.0:
+        warnings.append(f"Wide bid-ask spread ({spread_pct}%)")
+    if oi <= 0:
+        warnings.append("No open interest")
+    if entry > 0 and theta_daily / entry * 100.0 >= stop_loss_pct:
+        warnings.append(
+            f"One day of time decay (~₹{theta_daily:.1f}) is about the size of the stop loss; flat days will stop you out"
+        )
 
     return {
         "strike": strike,
@@ -1474,28 +1566,49 @@ def _get_manual_trade_recommendation(
         "bid": round(bid, 2),
         "ask": round(ask, 2),
         "delta": round(best_delta, 2),
+        "spread_pct": spread_pct,
+        "quote_source": quote_source,
+        "open_interest": oi,
+        "breakeven": round(strike + entry if opt_type == "CE" else strike - entry, 2),
+        "theta_daily": round(theta_daily, 2),
+        "spot_move_for_target": round(move_for_target, 1),
+        "spot_move_for_target_pct": round(move_for_target / spot_price * 100.0, 2) if spot_price else None,
+        "spot_move_to_offset_decay": round(move_for_decay, 1),
+        "risk_reward": round(profit_target_pct / stop_loss_pct, 2) if stop_loss_pct > 0 else None,
+        "max_loss_per_lot": round(entry * (stop_loss_pct / 100.0) * lot_size, 2),
+        "warnings": warnings,
         "profit_target_pct": profit_target_pct,
         "stop_loss_pct": stop_loss_pct,
-        "target_price": round(prem * target_mult, 2),
-        "stop_loss_price": round(prem * sl_mult, 2),
-        "capital_per_lot": round(ask * lot_size, 2),
+        "target_price": round(entry * target_mult, 2),
+        "stop_loss_price": round(entry * sl_mult, 2),
+        "capital_per_lot": round(entry * lot_size, 2),
         "lot_size": lot_size,
     }
 
 
-def gamma_squeeze_view(request: HttpRequest) -> HttpResponse:
+def _trader_defaults() -> tuple[float, float, float, float]:
+    """Calibrated (target_delta, profit_target_pct, stop_loss_pct, squeeze_threshold) from the auto-trader config."""
     try:
-        from studytrade.paper.auto_trader import AutoTrader
-        trader_cfg = AutoTrader.load_config()
-        default_delta = float(trader_cfg.get("target_delta", 0.35))
-        default_tp = float(trader_cfg.get("profit_target_pct", 50.0))
-        default_sl = float(trader_cfg.get("stop_loss_pct", 30.0))
+        from studytrade.paper.auto_trader import get_auto_trader
+
+        cfg = get_auto_trader(DATA_DIR).load_config()
+        return (
+            float(cfg.get("target_delta", 0.35)),
+            float(cfg.get("profit_target_pct", 50.0)),
+            float(cfg.get("stop_loss_pct", 30.0)),
+            float(cfg.get("min_confidence_pct", 60.0)),
+        )
     except Exception:
-        default_delta, default_tp, default_sl = 0.35, 50.0, 30.0
+        return 0.35, 50.0, 30.0, 60.0
+
+
+def gamma_squeeze_view(request: HttpRequest) -> HttpResponse:
+    default_delta, default_tp, default_sl, default_threshold = _trader_defaults()
 
     target_delta = float(request.GET.get("target_delta", default_delta))
     profit_target_pct = float(request.GET.get("profit_target_pct", default_tp))
     stop_loss_pct = float(request.GET.get("stop_loss_pct", default_sl))
+    squeeze_threshold = float(request.GET.get("threshold", default_threshold))
     min_dte = int(request.GET.get("min_dte", 2))
     max_dte = int(request.GET.get("max_dte", 20))
 
@@ -1595,7 +1708,7 @@ def gamma_squeeze_view(request: HttpRequest) -> HttpResponse:
                 eval_spot_df.loc[eval_spot_df.index[-1], "close"] = spot_close
 
             strat = GammaSqueezeStrategy(
-                squeeze_score_threshold=60.0,
+                squeeze_score_threshold=squeeze_threshold,
                 target_delta=target_delta,
                 min_dte=min_dte,
                 max_dte=max_dte,
@@ -1656,6 +1769,7 @@ def gamma_squeeze_view(request: HttpRequest) -> HttpResponse:
         "target_delta": target_delta,
         "profit_target_pct": profit_target_pct,
         "stop_loss_pct": stop_loss_pct,
+        "squeeze_threshold": squeeze_threshold,
         "min_dte": min_dte,
         "max_dte": max_dte,
         "ranks": _get_top_backtest_ranks(),
@@ -1738,7 +1852,6 @@ def api_run_gamma_strategy(request: HttpRequest) -> JsonResponse:
         symbol = params.get("symbol", "NIFTY")
         date_str = params.get("date", "")
         expiry_str = params.get("expiry", "")
-        threshold = float(params.get("threshold", 60.0))
         use_spreads = bool(params.get("use_spreads", False))
         allow_bearish = bool(params.get("allow_bearish", True))
         sim_spot_str = params.get("sim_spot", "")
@@ -1759,15 +1872,8 @@ def api_run_gamma_strategy(request: HttpRequest) -> JsonResponse:
             spot_slice = spot_slice.copy()
             spot_slice.loc[spot_slice.index[-1], "close"] = float(sim_spot_str)
 
-        try:
-            from studytrade.paper.auto_trader import AutoTrader
-            trader_cfg = AutoTrader.load_config()
-            default_delta = float(trader_cfg.get("target_delta", 0.35))
-            default_tp = float(trader_cfg.get("profit_target_pct", 50.0))
-            default_sl = float(trader_cfg.get("stop_loss_pct", 30.0))
-        except Exception:
-            default_delta, default_tp, default_sl = 0.35, 50.0, 30.0
-
+        default_delta, default_tp, default_sl, default_threshold = _trader_defaults()
+        threshold = float(params.get("threshold", default_threshold))
         target_delta = float(params.get("target_delta", default_delta))
         profit_target_pct = float(params.get("profit_target_pct", default_tp))
         stop_loss_pct = float(params.get("stop_loss_pct", default_sl))

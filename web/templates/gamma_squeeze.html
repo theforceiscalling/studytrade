@@ -278,6 +278,20 @@
                                         <span>🛑 Stop Loss (-{{ sig.recommendation.stop_loss_pct|floatformat:0 }}%): <strong class="text-danger">₹{{ sig.recommendation.stop_loss_price }}</strong></span>
                                         <span>💵 Capital/Lot: <strong class="text-light">₹{{ sig.recommendation.capital_per_lot }}</strong></span>
                                     </div>
+                                    <div class="d-flex justify-content-between text-secondary mt-1 small" style="font-size: 0.72rem;">
+                                        <span>R:R <strong class="text-light">{{ sig.recommendation.risk_reward|default:"-" }}</strong></span>
+                                        <span>Breakeven <strong class="text-light">{{ sig.recommendation.breakeven }}</strong></span>
+                                        <span>Spread <strong class="text-light">{{ sig.recommendation.spread_pct }}%</strong></span>
+                                    <span>Max loss/lot <strong class="text-danger">₹{{ sig.recommendation.max_loss_per_lot }}</strong></span>
+                                    </div>
+                                    <div class="d-flex justify-content-between text-secondary mt-1 small" style="font-size: 0.72rem;">
+                                        <span>Needs spot <strong class="text-light">{{ sig.recommendation.spot_move_for_target|floatformat:0 }} pts ({{ sig.recommendation.spot_move_for_target_pct }}%)</strong> for target</span>
+                                        <span>Decay <strong class="text-danger">₹{{ sig.recommendation.theta_daily }}/day</strong> (~{{ sig.recommendation.spot_move_to_offset_decay|floatformat:0 }} pts to offset)</span>
+                                        <span class="badge {% if sig.recommendation.quote_source == 'live' %}bg-success{% else %}bg-secondary{% endif %}">{{ sig.recommendation.quote_source }} quote</span>
+                                    </div>
+                                    {% for w in sig.recommendation.warnings %}
+                                    <div class="small text-warning mt-1"><i class="bi bi-exclamation-triangle me-1"></i>{{ w }}</div>
+                                    {% endfor %}
                                     <button class="btn btn-sm btn-success fw-bold w-100 mt-2 btn-buy-paper-gs" 
                                             data-symbol="{{ sig.recommendation.contract_symbol }}"
                                             data-underlying="{{ symbol }}"
@@ -602,6 +616,7 @@
     let currentTargetDelta = {{ target_delta|default:0.35 }};
     let currentProfitTarget = {{ profit_target_pct|default:50.0 }};
     let currentStopLoss = {{ stop_loss_pct|default:30.0 }};
+    let currentThreshold = {{ squeeze_threshold|default:60.0 }};
 
     function applyStrategyPreset(delta, tp, sl, label) {
         currentTargetDelta = delta;
@@ -645,7 +660,7 @@
                     symbol: currentSymbol,
                     date: selectedDate,
                     expiry: selectedExpiry,
-                    threshold: 50.0,
+                    threshold: currentThreshold,
                     target_delta: currentTargetDelta,
                     profit_target_pct: currentProfitTarget,
                     stop_loss_pct: currentStopLoss,
@@ -677,6 +692,18 @@
                                     <span>🛑 Stop Loss (-${rec.stop_loss_pct || currentStopLoss}%): <strong class="text-danger">₹${rec.stop_loss_price}</strong></span>
                                     <span>💵 Capital/Lot: <strong class="text-light">₹${rec.capital_per_lot}</strong></span>
                                 </div>
+                                <div class="d-flex justify-content-between text-secondary mt-1 small" style="font-size: 0.72rem;">
+                                    <span>R:R <strong class="text-light">${rec.risk_reward ?? '-'}</strong></span>
+                                    <span>Breakeven <strong class="text-light">${rec.breakeven}</strong></span>
+                                    <span>Spread <strong class="text-light">${rec.spread_pct}%</strong></span>
+                                    <span>Max loss/lot <strong class="text-danger">₹${rec.max_loss_per_lot}</strong></span>
+                                </div>
+                                <div class="d-flex justify-content-between text-secondary mt-1 small" style="font-size: 0.72rem;">
+                                    <span>Needs spot <strong class="text-light">${Math.round(rec.spot_move_for_target)} pts (${rec.spot_move_for_target_pct}%)</strong> for target</span>
+                                    <span>Decay <strong class="text-danger">₹${rec.theta_daily}/day</strong> (~${Math.round(rec.spot_move_to_offset_decay)} pts to offset)</span>
+                                    <span class="badge ${rec.quote_source === 'live' ? 'bg-success' : 'bg-secondary'}">${rec.quote_source} quote</span>
+                                </div>
+                                ${(rec.warnings || []).map(w => `<div class="small text-warning mt-1"><i class="bi bi-exclamation-triangle me-1"></i>${w}</div>`).join('')}
                                 <button class="btn btn-sm btn-success fw-bold w-100 mt-2 btn-buy-paper-gs" 
                                         data-symbol="${rec.contract_symbol}"
                                         data-underlying="${currentSymbol}"
@@ -684,7 +711,7 @@
                                         data-expiry="${selectedExpiry}"
                                         data-option-type="${isCall ? 'CE' : 'PE'}"
                                         data-price="${rec.ask || rec.premium}"
-                                        data-lot-size="${rec.lot_size || 25}"
+                                        data-lot-size="${rec.lot_size || 65}"
                                         data-target="${rec.target_price}"
                                         data-stop="${rec.stop_loss_price}"
                                         onclick="buyFromGammaSqueeze(this)">
@@ -773,52 +800,46 @@
     async function recalibrateSignal(btn) {
         const origHtml = btn.innerHTML;
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Recalibrating...';
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Starting...';
 
         try {
-            // Get Rank #1 from select or fallback
-            const sel = document.getElementById('strategyRankSelect');
-            let delta = 0.35, tp = 90.0, sl = 30.0, label = 'Rank #1: Top Net Profit (Δ=0.35, TP +90%)';
-            if (sel && sel.options.length > 0) {
-                const opt = sel.options[0];
-                delta = parseFloat(opt.dataset.delta) || 0.35;
-                tp = parseFloat(opt.dataset.tp) || 90.0;
-                sl = parseFloat(opt.dataset.sl) || 30.0;
-                label = opt.dataset.desc || opt.text;
-                sel.selectedIndex = 0;
-            }
-
-            const res = await fetch("{% url 'dashboard:api_gamma_calibrate' %}", {
+            await fetch("{% url 'dashboard:api_gamma_auto_calibrate' %}", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    target_delta: delta,
-                    profit_target_pct: tp,
-                    stop_loss_pct: sl,
-                    squeeze_score_threshold: 50.0,
-                    sync_auto_trader: true
-                })
+                body: JSON.stringify({ symbol: currentSymbol, lookback_days: 180, apply: true })
             });
-            const data = await res.json();
 
-            currentTargetDelta = delta;
-            currentProfitTarget = tp;
-            currentStopLoss = sl;
-
-            const badge = document.getElementById('activePresetBadge');
-            if (badge) badge.innerText = label;
-
-            // Highlight preset buttons if match
-            [1, 2, 3].forEach(rk => {
-                const b = document.getElementById('presetRankBtn' + rk);
-                if (b) {
-                    if (rk === 1) {
-                        b.className = 'btn btn-sm btn-cyan active py-1 text-truncate';
-                    } else {
-                        b.className = 'btn btn-sm btn-outline-secondary py-1 text-truncate';
-                    }
+            let st = null;
+            while (true) {
+                await new Promise(r => setTimeout(r, 2000));
+                const r = await fetch("{% url 'dashboard:api_gamma_auto_calibrate_status' %}");
+                st = await r.json();
+                if (st.state === 'running') {
+                    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span> Backtesting ${st.done || 0}/${st.total || '?'}`;
+                    continue;
                 }
-            });
+                break;
+            }
+            if (st.state === 'error') throw new Error(st.error);
+
+            const best = st.result && st.result.best;
+            if (!best) {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+                alert("No parameter set was profitable in both the fit and out-of-sample windows. Current settings were kept.");
+                return;
+            }
+
+            currentTargetDelta = best.target_delta;
+            currentProfitTarget = best.profit_target_pct;
+            currentStopLoss = best.stop_loss_pct;
+            currentThreshold = best.squeeze_score_threshold;
+
+            const oos = best.out_of_sample;
+            const badge = document.getElementById('activePresetBadge');
+            if (badge) {
+                badge.innerText = `Auto-calibrated: Δ=${best.target_delta}, TP +${best.profit_target_pct}%, SL -${best.stop_loss_pct}%, score ≥ ${best.squeeze_score_threshold} (OOS win ${oos.win_rate_pct}%, PF ${oos.profit_factor}, ${oos.trades} trades)`;
+            }
 
             const slider = document.getElementById('spotRangeSlider');
             const curSpot = slider ? parseFloat(slider.value) : currentSpot;

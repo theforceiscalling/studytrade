@@ -194,7 +194,7 @@ class PaperJournal:
         expiry: str | datetime,
         option_type: str,
         n_lots: int = 1,
-        lot_size: int = 25,
+        lot_size: int = 65,
         entry_price: float = 287.90,
         current_price: float = 287.90,
         entry_iv: float = 16.0,

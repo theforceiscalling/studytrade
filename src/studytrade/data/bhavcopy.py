@@ -29,7 +29,7 @@ import pandas as pd
 import requests
 
 from studytrade.constants import TIMEZONE, OptionType
-from studytrade.data.schemas import OPTION_COLUMNS
+from studytrade.data.schemas import OPTION_COLUMNS, SPOT_COLUMNS
 from studytrade.data.store import DataStore
 from studytrade.math.iv_solver import implied_volatility
 
@@ -306,16 +306,21 @@ class BhavcopyImporter:
                 if df_opts.empty:
                     continue
                 try:
+                    self._upsert_spot(df_raw, sym, df_opts["timestamp"].iloc[0])
+                except Exception as e:
+                    logger.error("Failed saving spot for %s: %s", sym, e)
+                try:
                     # Append or merge with existing options data
                     existing = None
                     try:
                         existing = self.store.load_options(sym)
-                    except Exception:
+                    except FileNotFoundError:
                         pass
 
                     if existing is not None and not existing.empty:
-                        # Drop any matching timestamps for idempotency
-                        existing = existing[~existing["timestamp"].isin(df_opts["timestamp"])]
+                        # Drop same-day rows (incl. intraday live-chain snapshots) for idempotency
+                        new_days = set(df_opts["timestamp"].dt.strftime("%Y-%m-%d"))
+                        existing = existing[~existing["timestamp"].dt.strftime("%Y-%m-%d").isin(new_days)]
                         merged = pd.concat([existing, df_opts], ignore_index=True)
                         merged.sort_values(by=["timestamp", "strike"], inplace=True)
                         self.store.save_options(merged, sym)
@@ -328,6 +333,93 @@ class BhavcopyImporter:
                     stats["row_counts"][sym] = 0
 
         return stats
+
+    def _upsert_spot(self, df_raw: pd.DataFrame, sym: str, ts: pd.Timestamp) -> None:
+        """Add the day's underlying close (modern Bhavcopy UndrlygPric) to the spot series."""
+        if "UndrlygPric" not in df_raw.columns:
+            return
+        sub = df_raw[(df_raw["FinInstrmTp"] == "IDO") & (df_raw["TckrSymb"] == sym)]
+        prices = pd.to_numeric(sub["UndrlygPric"], errors="coerce").dropna()
+        prices = prices[prices > 0]
+        if prices.empty:
+            return
+        close = float(prices.median())
+
+        try:
+            spot_df = self.store.load_spot(sym)
+        except FileNotFoundError:
+            spot_df = pd.DataFrame(columns=SPOT_COLUMNS)
+
+        day = ts.strftime("%Y-%m-%d")
+        if not spot_df.empty:
+            spot_df = spot_df[spot_df["timestamp"].dt.strftime("%Y-%m-%d") != day]
+        prior = spot_df[spot_df["timestamp"] < ts]
+        open_ = float(prior["close"].iloc[-1]) if not prior.empty else close
+        new_row = pd.DataFrame([{
+            "timestamp": ts,
+            "symbol": sym,
+            "open": round(open_, 2),
+            "high": round(max(open_, close), 2),
+            "low": round(min(open_, close), 2),
+            "close": round(close, 2),
+            "volume": 0,
+        }])
+        merged = pd.concat([spot_df, new_row], ignore_index=True).sort_values("timestamp")
+        self.store.save_spot(merged.reset_index(drop=True), sym)
+
+    def sync_missing_days(
+        self,
+        symbols: list[str] | None = None,
+        max_lookback_days: int = 30,
+    ) -> dict[str, Any]:
+        """
+        Backfill every weekday between the last stored spot date and today.
+        Days with no published Bhavcopy (holidays, not yet posted) are skipped; today falls
+        back to the live NSE option chain until the archive is published.
+        """
+        symbols = symbols or ["NIFTY", "BANKNIFTY", "FINNIFTY"]
+        today = datetime.now().date()
+        last_dates = []
+        for sym in symbols:
+            try:
+                spot = self.store.load_spot(sym)
+                if not spot.empty:
+                    last_dates.append(spot["timestamp"].max().date())
+            except Exception:
+                continue
+        start = (min(last_dates)) if last_dates else today - timedelta(days=max_lookback_days)
+        start = max(start, today - timedelta(days=max_lookback_days))
+        last_stored = min(last_dates) if last_dates else None
+
+        synced: list[str] = []
+        skipped: list[str] = []
+        day = start
+        while day <= today:
+            if day.weekday() < 5:
+                cached = (self.cache_dir / f"bhavcopy_{day.strftime('%Y%m%d')}.csv").exists()
+                # Already-stored day: only upgrade a live-chain snapshot of today once the archive is posted
+                if day == last_stored and (day != today or cached):
+                    day += timedelta(days=1)
+                    continue
+                try:
+                    self.sync_date(day, symbols=symbols, save_to_store=True)
+                    synced.append(day.isoformat())
+                except FileNotFoundError:
+                    if day == today:
+                        try:
+                            res = self.sync_today_from_live_chain(symbols=symbols)
+                            if res.get("status") == "success":
+                                synced.append(f"{day.isoformat()} (live chain)")
+                                day += timedelta(days=1)
+                                continue
+                        except Exception as e:
+                            logger.debug("Live chain fallback failed: %s", e)
+                    skipped.append(day.isoformat())
+                except Exception as e:
+                    logger.warning("Backfill failed for %s: %s", day, e)
+                    skipped.append(day.isoformat())
+            day += timedelta(days=1)
+        return {"synced": synced, "skipped": skipped, "checked_through": today.isoformat()}
 
     def sync_latest_trading_day(
         self,
@@ -402,7 +494,7 @@ class BhavcopyImporter:
             try:
                 spot_df = self.store.load_spot(sym)
                 spot_df = spot_df[spot_df["timestamp"].dt.strftime("%Y-%m-%d") != today_date_str]
-            except Exception:
+            except FileNotFoundError:
                 spot_df = pd.DataFrame(columns=SPOT_COLUMNS)
 
             new_spot_row = pd.DataFrame([{
@@ -421,7 +513,7 @@ class BhavcopyImporter:
             try:
                 opt_df = self.store.load_options(sym)
                 opt_df = opt_df[opt_df["timestamp"].dt.strftime("%Y-%m-%d") != today_date_str]
-            except Exception:
+            except FileNotFoundError:
                 opt_df = pd.DataFrame(columns=OPTION_COLUMNS)
 
             opt_rows = []
