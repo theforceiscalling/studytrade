@@ -456,8 +456,19 @@ def paper_view(request: HttpRequest) -> HttpResponse:
 
             latest_ts = opt_df["timestamp"].max()
             opt_slice = opt_df[opt_df["timestamp"] == latest_ts]
+            if "expiry" in opt_slice.columns and not opt_slice.empty:
+                front_exp = opt_slice["expiry"].min()
+                opt_slice = opt_slice[opt_slice["expiry"] == front_exp]
             spot_slice = spot_df.tail(10)
             spot_close = float(spot_df["close"].iloc[-1])
+
+            from studytrade.live.session_engine import get_live_tick_cache
+            cached_spot = get_live_tick_cache().get_tick(sym)
+            if cached_spot and float(cached_spot.get("last_price") or 0.0) > 0:
+                spot_close = float(cached_spot["last_price"])
+                if not spot_slice.empty:
+                    spot_slice = spot_slice.copy()
+                    spot_slice.loc[spot_slice.index[-1], "close"] = spot_close
 
             if sym in ("CRUDEOILM", "NATURALGAS"):
                 from studytrade.data.fetchers.mcx_delayed import overlay_live_mcx_on_chain
@@ -494,10 +505,16 @@ def paper_view(request: HttpRequest) -> HttpResponse:
                             "underlying_symbol": sym,
                             "option_type": "CE" if "CALL" in s.direction.value else "PE",
                             "strike": rec["strike"],
+                            "attr_key": f"{sym.upper()}|{float(rec['strike'])}|{'CE' if 'CALL' in s.direction.value else 'PE'}",
                             "expiry": str(opt_slice["expiry"].iloc[0])[:10] if "expiry" in opt_slice.columns else "",
                             "direction": s.direction.value,
                             "badge_text": sig_type_badge,
                             "target_delta": rec.get("delta", s.target_delta),
+                            "ltp": rec.get("premium", rec.get("ask", 100.0)),
+                            "bid": rec.get("bid", rec.get("premium", 100.0)),
+                            "ask": rec.get("ask", rec.get("premium", 100.0)),
+                            "spot_price": round(spot_close, 2),
+                            "quote_source": rec.get("quote_source", "estimated"),
                             "entry_price": rec.get("ask", rec.get("premium", 100.0)),
                             "target_price": rec.get("target_price", 150.0),
                             "stop_loss_price": rec.get("stop_loss_price", 70.0),
@@ -1069,11 +1086,17 @@ def api_sync_nse_delayed_prices(request: HttpRequest) -> JsonResponse:
         for k, v in tick_cache.get_all_ticks().items():
             ltp_q = float(v.get("last_price") or 0.0)
             if ltp_q > 0 and v.get("strike"):
-                tick_quotes[k] = {
+                q_obj = {
                     "last_price": ltp_q,
                     "ask": float(v.get("ask") or ltp_q),
                     "bid": float(v.get("bid") or ltp_q),
+                    "is_fresh": bool(v.get("is_fresh", False)),
                 }
+                tick_quotes[k] = q_obj
+                und_k = str(v.get("underlying", "")).upper()
+                ot_k = str(v.get("option_type", "")).upper()
+                if und_k and ot_k:
+                    tick_quotes[f"{und_k}|{float(v['strike'])}|{ot_k}"] = q_obj
         stats["tick_quotes"] = tick_quotes
 
         return JsonResponse(
@@ -1619,7 +1642,8 @@ def _get_manual_trade_recommendation(
     sym = str(best_row["symbol"])
     try:
         from studytrade.live.session_engine import get_live_tick_cache
-        tick = get_live_tick_cache().get_tick(sym)
+        tc = get_live_tick_cache()
+        tick = tc.get_tick(sym) or tc.get_tick(f"{symbol.upper()}|{float(best_row['strike'])}|{opt_type}")
     except Exception:
         tick = None
 

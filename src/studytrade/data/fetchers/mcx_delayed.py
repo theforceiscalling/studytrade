@@ -338,23 +338,23 @@ def overlay_live_mcx_on_chain(
             quote_lookup[(strike, ot)] = leg
             if tick_cache is not None:
                 std_sym = fetcher.format_contract_symbol(sym, exp_str, strike, ot)
-                tick_cache.update_tick(
-                    std_sym,
-                    {
-                        "symbol": std_sym,
-                        "underlying": sym,
-                        "strike": strike,
-                        "option_type": ot,
-                        "last_price": ltp,
-                        "bid": float(leg.get("buyPrice1") or ltp),
-                        "ask": float(leg.get("sellPrice1") or ltp),
-                        "close": ltp,
-                        "open_interest": int(leg.get("openInterest") or 0),
-                        "volume": int(leg.get("totalTradedVolume") or 0),
-                        "is_fresh": True,
-                        "timestamp": ts_str,
-                    },
-                )
+                attr_key = f"{sym.upper()}|{float(strike)}|{ot}"
+                mcx_tick = {
+                    "symbol": std_sym,
+                    "underlying": sym,
+                    "strike": strike,
+                    "option_type": ot,
+                    "last_price": ltp,
+                    "bid": float(leg.get("buyPrice1") or ltp),
+                    "ask": float(leg.get("sellPrice1") or ltp),
+                    "close": ltp,
+                    "open_interest": int(leg.get("openInterest") or 0),
+                    "volume": int(leg.get("totalTradedVolume") or 0),
+                    "is_fresh": True,
+                    "timestamp": ts_str,
+                }
+                tick_cache.update_tick(std_sym, mcx_tick)
+                tick_cache.update_tick(attr_key, mcx_tick)
 
     if tick_cache is not None:
         tick_cache.update_tick(

@@ -231,8 +231,8 @@
                         1-Click execution places simulated paper orders directly into your SQLite ledger.
                     </p>
                 </div>
-                <span class="badge bg-info-subtle text-info border border-info-subtle px-3 py-1">
-                    <i class="bi bi-check-circle me-1"></i> Calibrated Scanner Active
+                <span id="signalFeedStatusBadge" class="badge bg-info-subtle text-info border border-info-subtle px-3 py-1">
+                    <i class="bi bi-broadcast me-1"></i> Live Signal Pricing Active
                 </span>
             </div>
 
@@ -244,6 +244,7 @@
                             <th>Contract Symbol</th>
                             <th>Underlying / Strike</th>
                             <th>Target $\Delta$</th>
+                            <th>Live LTP (₹)</th>
                             <th>Entry Ask (₹)</th>
                             <th>Target (+50%)</th>
                             <th>Stop Loss (-30%)</th>
@@ -254,7 +255,11 @@
                     </thead>
                     <tbody>
                         {% for sig in realtime_signals %}
-                        <tr class="signal-live-row" data-sig-symbol="{{ sig.symbol }}" data-lot-size="{{ sig.lot_size }}">
+                        <tr class="signal-live-row"
+                            data-sig-symbol="{{ sig.symbol }}"
+                            data-sig-underlying="{{ sig.underlying_symbol }}"
+                            data-sig-key="{{ sig.attr_key }}"
+                            data-lot-size="{{ sig.lot_size }}">
                             <td>
                                 {% if "CALL" in sig.direction %}
                                     <span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1">
@@ -270,8 +275,17 @@
                             <td>
                                 <span class="badge bg-dark border border-secondary">{{ sig.underlying_symbol }}</span>
                                 <span class="font-monospace ms-1">{{ sig.strike }}</span>
+                                <div class="small text-muted font-monospace sig-spot" style="font-size: 0.72rem;">Spot: ₹{{ sig.spot_price|floatformat:1 }}</div>
                             </td>
                             <td class="font-monospace text-info">{{ sig.target_delta }}</td>
+                            <td class="font-monospace">
+                                <span class="fw-bold text-light sig-ltp">₹{{ sig.ltp|floatformat:2 }}</span>
+                                <div>
+                                    <span class="badge {% if sig.quote_source == 'live' %}bg-success-subtle text-success border border-success-subtle{% else %}bg-secondary-subtle text-secondary border border-secondary-subtle{% endif %} sig-quote-badge" style="font-size: 0.65rem;">
+                                        {% if sig.quote_source == 'live' %}LIVE{% else %}MODEL{% endif %}
+                                    </span>
+                                </div>
+                            </td>
                             <td class="font-monospace fw-bold text-success sig-entry">₹{{ sig.entry_price|floatformat:2 }}</td>
                             <td class="font-monospace text-success sig-tp">₹{{ sig.target_price|floatformat:2 }}</td>
                             <td class="font-monospace text-danger sig-sl">₹{{ sig.stop_loss_price|floatformat:2 }}</td>
@@ -300,7 +314,7 @@
                         </tr>
                         {% empty %}
                         <tr>
-                            <td colspan="10" class="text-center text-muted py-4">
+                            <td colspan="11" class="text-center text-muted py-4">
                                 <i class="bi bi-info-circle me-1"></i> No active squeeze signals triggered at current spot levels. Scanner continues monitoring live feeds.
                             </td>
                         </tr>
@@ -782,20 +796,36 @@ async function syncMarketPrices(btn, isQuiet = false) {
                 });
             }
 
-            // 4. Update Real-Time Strategy Signals table dynamically
-            if (stats.tick_quotes) {
+            // 4. Update Real-Time Strategy Signals table dynamically (Spot, Live LTP, Ask, TP, SL, Margin)
+            if (stats.tick_quotes || stats.spots) {
                 const tpPct = parseFloat(document.getElementById('cfgProfitTarget')?.value || "50") || 50;
                 const slPct = parseFloat(document.getElementById('cfgStopLoss')?.value || "30") || 30;
                 document.querySelectorAll('.signal-live-row').forEach(row => {
+                    const und = row.dataset.sigUnderlying;
+                    if (stats.spots && und && stats.spots[und]) {
+                        const spotEl = row.querySelector('.sig-spot');
+                        if (spotEl) spotEl.textContent = `Spot: ₹${Number(stats.spots[und]).toFixed(1)}`;
+                    }
+
                     const sym = row.dataset.sigSymbol;
-                    const q = stats.tick_quotes[sym];
+                    const attrKey = row.dataset.sigKey;
+                    const q = (stats.tick_quotes && (stats.tick_quotes[sym] || stats.tick_quotes[attrKey])) || null;
                     if (!q) return;
+                    const liveLtp = Number(q.last_price || q.ask);
                     const liveEntry = Number(q.ask || q.last_price);
                     if (!(liveEntry > 0)) return;
                     const lotSize = parseInt(row.dataset.lotSize || "25", 10);
                     const liveTp = +(liveEntry * (1 + tpPct / 100)).toFixed(2);
                     const liveSl = +(liveEntry * Math.max(0, 1 - slPct / 100)).toFixed(2);
                     const liveCap = +(liveEntry * lotSize).toFixed(2);
+
+                    const ltpEl = row.querySelector('.sig-ltp');
+                    if (ltpEl && liveLtp > 0) ltpEl.textContent = `₹${liveLtp.toFixed(2)}`;
+                    const qBadge = row.querySelector('.sig-quote-badge');
+                    if (qBadge) {
+                        qBadge.className = "badge bg-success-subtle text-success border border-success-subtle sig-quote-badge";
+                        qBadge.textContent = "LIVE";
+                    }
 
                     const eEl = row.querySelector('.sig-entry');
                     if (eEl) eEl.textContent = `₹${liveEntry.toFixed(2)}`;
@@ -813,6 +843,13 @@ async function syncMarketPrices(btn, isQuiet = false) {
                         buyBtn.dataset.stop = liveSl.toFixed(2);
                     }
                 });
+
+                const sigBadge = document.getElementById('signalFeedStatusBadge');
+                if (sigBadge) {
+                    const nowTime = new Date().toLocaleTimeString('en-IN', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                    sigBadge.className = "badge bg-success-subtle text-success border border-success-subtle px-3 py-1";
+                    sigBadge.innerHTML = `<i class="bi bi-broadcast me-1"></i> Live Prices (${nowTime})`;
+                }
             }
 
             // 5. Update market feed status badge

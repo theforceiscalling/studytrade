@@ -217,6 +217,7 @@ class NSEOptionChainFetcher:
                     continue
 
                 std_sym = symbol_formatter(sym, exp, strike, opt_type)
+                attr_key = f"{sym.upper()}|{float(strike)}|{opt_type.upper()}"
                 tick_data = {
                     "symbol": std_sym,
                     "underlying": sym,
@@ -232,6 +233,7 @@ class NSEOptionChainFetcher:
                     "timestamp": ts,
                 }
                 tick_cache.update_tick(std_sym, tick_data)
+                tick_cache.update_tick(attr_key, tick_data)
                 updated_count += 1
 
                 # Match open positions by (underlying, strike, option_type) and expiry if specified
