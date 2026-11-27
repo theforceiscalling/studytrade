@@ -787,6 +787,16 @@ async function syncMarketPrices(btn, isQuiet = false) {
 
 // 15-second non-blocking auto-updater for market prices
 let syncCountdown = 15;
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+        const cdEl = document.getElementById('autoSyncCountdown');
+        if (cdEl) cdEl.textContent = "Updating...";
+        syncMarketPrices(null, true).then(() => {
+            syncCountdown = 15;
+            if (cdEl) cdEl.textContent = `${syncCountdown}s`;
+        });
+    }, 400);
+});
 setInterval(() => {
     const cdEl = document.getElementById('autoSyncCountdown');
     if (!cdEl) return;

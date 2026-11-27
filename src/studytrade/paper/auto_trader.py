@@ -120,12 +120,16 @@ class AutoTrader:
             db_price = float(pos.get("current_price", 0.0))
             tick = self.tick_cache.get_tick(sym)
             if tick and "last_price" in tick and tick.get("is_fresh", False):
-                current_price = float(tick.get("bid", tick["last_price"]))
+                ltp_v = float(tick.get("last_price") or 0.0)
+                bid_v = float(tick.get("bid") or 0.0)
+                current_price = ltp_v if ltp_v > 0.0 else (bid_v if bid_v > 0.0 else entry_price)
                 self.journal.update_current_price(sym, current_price)
             elif db_price > 0.0 and abs(db_price - entry_price) > 1e-4:
                 current_price = db_price
             elif tick and "last_price" in tick:
-                current_price = float(tick.get("bid", tick["last_price"]))
+                ltp_v = float(tick.get("last_price") or 0.0)
+                bid_v = float(tick.get("bid") or 0.0)
+                current_price = ltp_v if ltp_v > 0.0 else (bid_v if bid_v > 0.0 else entry_price)
             else:
                 current_price = entry_price
 

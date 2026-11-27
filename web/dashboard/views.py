@@ -368,8 +368,12 @@ def paper_view(request: HttpRequest) -> HttpResponse:
     for pos in open_positions:
         try:
             from studytrade.math.greeks import greeks
+            from studytrade.live.session_engine import get_live_tick_cache
             und_sym = str(pos.get("underlying_symbol", "NIFTY"))
             default_spot = 53500.0 if und_sym == "BANKNIFTY" else (24800.0 if und_sym == "FINNIFTY" else (7735.0 if und_sym == "CRUDEOILM" else (334.5 if und_sym == "NATURALGAS" else 25800.0)))
+            live_spot_tick = get_live_tick_cache().get_tick(und_sym)
+            if live_spot_tick and float(live_spot_tick.get("last_price") or 0.0) > 0:
+                default_spot = float(live_spot_tick["last_price"])
             
             if "expiry" in pos and pos["expiry"]:
                 try:
@@ -438,6 +442,13 @@ def paper_view(request: HttpRequest) -> HttpResponse:
             opt_slice = opt_df[opt_df["timestamp"] == latest_ts]
             spot_slice = spot_df.tail(10)
             spot_close = float(spot_df["close"].iloc[-1])
+
+            if sym in ("CRUDEOILM", "NATURALGAS"):
+                from studytrade.data.fetchers.mcx_delayed import overlay_live_mcx_on_chain
+                spot_close, opt_slice = overlay_live_mcx_on_chain(sym, spot_close, opt_slice)
+                if not spot_slice.empty:
+                    spot_slice = spot_slice.copy()
+                    spot_slice.loc[spot_slice.index[-1], "close"] = spot_close
 
             from studytrade.strategy.signals.gamma_squeeze import GammaSqueezeStrategy
             cfg_delta, cfg_tp, cfg_sl, cfg_thresh = _trader_defaults()
@@ -1725,6 +1736,10 @@ def gamma_squeeze_view(request: HttpRequest) -> HttpResponse:
             target_chain = opt_day
             if selected_expiry:
                 target_chain = opt_day[opt_day["expiry"].dt.strftime("%Y-%m-%d") == selected_expiry]
+
+            if not sim_spot_str and dates and selected_date == dates[-1] and symbol in ("CRUDEOILM", "NATURALGAS"):
+                from studytrade.data.fetchers.mcx_delayed import overlay_live_mcx_on_chain
+                spot_close, target_chain = overlay_live_mcx_on_chain(symbol, spot_close, target_chain)
 
             lot_size = INSTRUMENTS.get(symbol, INSTRUMENTS["NIFTY"]).lot_size
             gex_prof = compute_gex_profile(target_chain, spot_price=spot_close, lot_size=lot_size)

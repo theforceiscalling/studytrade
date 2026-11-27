@@ -43,7 +43,7 @@ class NSEOptionChainFetcher:
         """NSE distinguishes index ('Indices') and stock ('Equity') option chains."""
         return "Indices" if symbol.upper() in cls.INDEX_SYMBOLS else "Equity"
 
-    def __init__(self, cache_ttl_seconds: int = 45) -> None:
+    def __init__(self, cache_ttl_seconds: int = 14) -> None:
         self.cache_ttl_seconds = cache_ttl_seconds
         self._session: requests.Session | None = None
         self._last_fetch_time: dict[str, float] = {}
@@ -152,6 +152,85 @@ class NSEOptionChainFetcher:
             logger.error(f"Error fetching NSE option chain for {symbol}: {exc}")
             return None
 
+    def _sync_chain_to_cache(
+        self,
+        sym: str,
+        chain_data: dict[str, Any],
+        symbol_formatter: Any,
+        tick_cache: Any,
+        jnl: PaperJournal,
+        open_pos_attr_map: dict[tuple[str, float, str], list[dict[str, Any]]],
+        spots_synced: dict[str, float],
+        updated_pos_symbols: set[str],
+    ) -> int:
+        """Process a normalized option chain snapshot into LiveTickCache and PaperJournal."""
+        spot = float(chain_data.get("spot_price") or 0.0)
+        exp = str(chain_data.get("expiry") or "")
+        exp_iso = str(chain_data.get("expiry_iso") or "")
+        ts = chain_data.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        updated_count = 0
+
+        if spot > 0:
+            spots_synced[sym] = spot
+            tick_cache.update_tick(
+                sym,
+                {
+                    "symbol": sym,
+                    "last_price": spot,
+                    "is_fresh": True,
+                    "timestamp": ts,
+                },
+            )
+
+        for row in chain_data.get("strikes", []):
+            strike = float(row.get("strikePrice", 0.0))
+            for opt_type in ("CE", "PE"):
+                sub_row = row.get(opt_type)
+                if not sub_row:
+                    continue
+
+                ltp = float(sub_row.get("lastPrice", 0.0))
+                bid = float(sub_row.get("buyPrice1") or ltp or 0.0)
+                ask = float(sub_row.get("sellPrice1") or ltp or 0.0)
+                iv = float(sub_row.get("impliedVolatility", 0.0))
+                oi = int(sub_row.get("openInterest", 0))
+                if ltp <= 0 and bid <= 0 and ask <= 0:
+                    continue
+
+                std_sym = symbol_formatter(sym, exp, strike, opt_type)
+                tick_data = {
+                    "symbol": std_sym,
+                    "underlying": sym,
+                    "strike": strike,
+                    "option_type": opt_type,
+                    "last_price": ltp,
+                    "bid": bid,
+                    "ask": ask,
+                    "close": ltp,
+                    "implied_volatility": iv / 100.0 if iv > 1.0 else iv,
+                    "open_interest": oi,
+                    "is_fresh": True,
+                    "timestamp": ts,
+                }
+                tick_cache.update_tick(std_sym, tick_data)
+                updated_count += 1
+
+                # Match open positions by (underlying, strike, option_type) and expiry if specified
+                match_key = (sym.upper(), strike, opt_type.upper())
+                if match_key in open_pos_attr_map and ltp > 0:
+                    for matched_pos in open_pos_attr_map[match_key]:
+                        pos_exp = str(matched_pos.get("expiry", ""))[:10]
+                        if exp_iso and pos_exp and pos_exp != exp_iso and pos_exp[:7] != exp_iso[:7]:
+                            continue
+                        pos_sym = matched_pos["symbol"]
+                        custom_tick = tick_data.copy()
+                        custom_tick["symbol"] = pos_sym
+                        tick_cache.update_tick(pos_sym, custom_tick)
+                        jnl.update_current_price(pos_sym, ltp)
+                        updated_pos_symbols.add(pos_sym)
+
+        return updated_count
+
     def sync_to_tick_cache(
         self,
         symbols: list[str] = ["NIFTY", "BANKNIFTY", "FINNIFTY"],
@@ -159,12 +238,15 @@ class NSEOptionChainFetcher:
         force: bool = False,
     ) -> dict[str, Any]:
         """
-        Pull latest delayed quotes from NSE and update LiveTickCache & PaperJournal.
+        Pull latest delayed quotes from NSE & MCX and update LiveTickCache & PaperJournal.
         Matches both exact contract symbols and open position attributes (underlying, strike, option_type).
-        Also syncs MCX Commodity open positions (CRUDEOILM & NATURALGAS) to maintain live mark-to-market valuations.
         """
+        from studytrade.data.fetchers.mcx_delayed import MCX_SYMBOLS, get_mcx_delayed_fetcher
+
+        mcx_fetcher = get_mcx_delayed_fetcher()
         if force:
             self._last_fetch_time.clear()
+            mcx_fetcher.clear_cache()
 
         tick_cache = get_live_tick_cache()
         updated_count = 0
@@ -182,138 +264,93 @@ class NSEOptionChainFetcher:
             open_pos_attr_map.setdefault(key, []).append(p)
 
         spots_synced: dict[str, float] = {}
+        updated_pos_symbols: set[str] = set()
 
         # 1. Sync NSE Equity Indices
         for sym in symbols:
-            if sym.upper() in ("CRUDEOILM", "NATURALGAS"):
+            if sym.upper() in MCX_SYMBOLS:
                 continue
             chain_data = self.fetch_index_chain(sym)
-            if not chain_data:
-                continue
-
-            spot = chain_data["spot_price"]
-            exp = chain_data["expiry"]
-            if spot > 0:
-                spots_synced[sym] = spot
-                tick_cache.update_tick(
-                    sym,
-                    {
-                        "symbol": sym,
-                        "last_price": spot,
-                        "is_fresh": True,
-                        "timestamp": chain_data["timestamp"],
-                    },
+            if chain_data:
+                updated_count += self._sync_chain_to_cache(
+                    sym, chain_data, self.format_contract_symbol, tick_cache, jnl,
+                    open_pos_attr_map, spots_synced, updated_pos_symbols,
                 )
 
-            for row in chain_data.get("strikes", []):
-                strike = float(row.get("strikePrice", 0.0))
-                for opt_type in ("CE", "PE"):
-                    sub_row = row.get(opt_type)
-                    if not sub_row:
-                        continue
+        # 2. Sync MCX Commodities (CRUDEOILM, NATURALGAS + any open MCX position expiries)
+        mcx_targets: set[tuple[str, str | None]] = {("CRUDEOILM", None), ("NATURALGAS", None)}
+        for p in open_positions:
+            und = str(p.get("underlying_symbol", "")).upper()
+            if und in MCX_SYMBOLS:
+                exp_str = str(p.get("expiry", ""))[:10] or None
+                mcx_targets.add((und, exp_str))
 
-                    ltp = float(sub_row.get("lastPrice", 0.0))
-                    bid = float(sub_row.get("buyPrice1") or sub_row.get("lastPrice") or 0.0)
-                    ask = float(sub_row.get("sellPrice1") or sub_row.get("lastPrice") or 0.0)
-                    iv = float(sub_row.get("impliedVolatility", 0.0))
-                    oi = int(sub_row.get("openInterest", 0))
+        fetched_mcx_keys: set[tuple[str, str]] = set()
+        for sym, exp in sorted(mcx_targets, key=lambda x: (x[0], x[1] or "")):
+            chain_data = mcx_fetcher.fetch_option_chain(sym, expiry=exp, force=force)
+            if chain_data:
+                resolved_exp = str(chain_data.get("expiry", ""))
+                if (sym, resolved_exp) in fetched_mcx_keys:
+                    continue
+                fetched_mcx_keys.add((sym, resolved_exp))
+                updated_count += self._sync_chain_to_cache(
+                    sym, chain_data, mcx_fetcher.format_contract_symbol, tick_cache, jnl,
+                    open_pos_attr_map, spots_synced, updated_pos_symbols,
+                )
 
-                    # Standard format (e.g. NIFTY23NOV25950CE)
-                    std_sym = self.format_contract_symbol(sym, exp, strike, opt_type)
+        # 3. Fallback BSM MTM only for open MCX positions that were not returned by live MCX API
+        missing_mcx = [
+            p for p in open_positions
+            if str(p.get("underlying_symbol", "")).upper() in MCX_SYMBOLS
+            and p.get("symbol") not in updated_pos_symbols
+        ]
+        if missing_mcx:
+            try:
+                import pandas as pd
+                from studytrade.constants import OptionType
+                from studytrade.data.store import DataStore
+                from studytrade.math.bsm import bsm_price
 
-                    tick_data = {
-                        "symbol": std_sym,
-                        "underlying": sym,
-                        "strike": strike,
-                        "option_type": opt_type,
-                        "last_price": ltp,
-                        "bid": bid,
-                        "ask": ask,
-                        "close": ltp,
-                        "implied_volatility": iv / 100.0 if iv > 1.0 else iv,
-                        "open_interest": oi,
-                        "is_fresh": True,
-                        "timestamp": chain_data["timestamp"],
-                    }
-                    tick_cache.update_tick(std_sym, tick_data)
-                    updated_count += 1
-
-                    # Match open positions with same (underlying, strike, option_type)
-                    match_key = (sym.upper(), strike, opt_type.upper())
-                    if match_key in open_pos_attr_map and ltp > 0:
-                        for matched_pos in open_pos_attr_map[match_key]:
-                            pos_sym = matched_pos["symbol"]
-                            custom_tick = tick_data.copy()
-                            custom_tick["symbol"] = pos_sym
-                            tick_cache.update_tick(pos_sym, custom_tick)
-                            jnl.update_current_price(pos_sym, ltp)
-
-        # 2. Sync MCX Commodity Open Positions (CRUDEOILM & NATURALGAS)
-        try:
-            import pandas as pd
-            from studytrade.constants import OptionType
-            from studytrade.data.store import DataStore
-            from studytrade.math.bsm import bsm_price
-
-            store = DataStore()
-            for p in open_positions:
-                und = str(p.get("underlying_symbol", "")).upper()
-                if und in ("CRUDEOILM", "NATURALGAS"):
+                store = DataStore()
+                for p in missing_mcx:
+                    und = str(p.get("underlying_symbol", "")).upper()
                     pos_sym = str(p.get("symbol", ""))
                     stk = float(p.get("strike", 0.0))
                     ot = str(p.get("option_type", "CE")).upper()
                     exp_str = str(p.get("expiry", ""))
-                    cur_db_p = float(p.get("current_price", 0.0))
 
-                    opt_df = store.load_options(und)
                     spot_df = store.load_spot(und)
                     cur_spot = float(spot_df["close"].iloc[-1]) if not spot_df.empty else (7735.0 if und == "CRUDEOILM" else 334.5)
-                    spots_synced[und] = cur_spot
+                    spots_synced.setdefault(und, cur_spot)
+                    iv_val = 0.50 if und == "CRUDEOILM" else 0.55
 
-                    matched_ltp = None
-                    matched_bid = None
-                    matched_ask = None
-                    matched_iv = 0.50 if und == "CRUDEOILM" else 0.55
+                    try:
+                        dtes = max(1.0, float((pd.to_datetime(exp_str).date() - datetime.now().date()).days)) if exp_str else 19.0
+                    except Exception:
+                        dtes = 19.0
+                    theo = bsm_price(OptionType.CALL if ot == "CE" else OptionType.PUT, cur_spot, stk, dtes / 365.0, 0.07, iv_val)
+                    fallback_ltp = round(float(theo), 2)
 
-                    if not opt_df.empty:
-                        latest_ts = opt_df["timestamp"].max()
-                        chain_slice = opt_df[opt_df["timestamp"] == latest_ts]
-                        match = chain_slice[(chain_slice["strike"] == stk) & (chain_slice["option_type"] == ot)]
-                        if not match.empty:
-                            matched_ltp = float(match["close"].iloc[0])
-                            matched_bid = float(match.get("bid", matched_ltp * 0.99).iloc[0])
-                            matched_ask = float(match.get("ask", matched_ltp * 1.01).iloc[0])
-                            matched_iv = float(match.get("implied_volatility", matched_iv).iloc[0])
-
-                    if matched_ltp is None or matched_ltp <= 0:
-                        try:
-                            dtes = max(1.0, float((pd.to_datetime(exp_str).date() - datetime.now().date()).days)) if exp_str else 19.0
-                        except Exception:
-                            dtes = 19.0
-                        theo = bsm_price(OptionType.CALL if ot == "CE" else OptionType.PUT, cur_spot, stk, dtes / 365.0, 0.07, matched_iv)
-                        matched_ltp = round(float(theo), 2)
-                        matched_bid = round(matched_ltp * 0.99, 2)
-                        matched_ask = round(matched_ltp * 1.01, 2)
-
-                    # Update tick cache and journal MTM
-                    comm_tick = {
-                        "symbol": pos_sym,
-                        "underlying": und,
-                        "strike": stk,
-                        "option_type": ot,
-                        "last_price": matched_ltp,
-                        "bid": matched_bid,
-                        "ask": matched_ask,
-                        "close": matched_ltp,
-                        "implied_volatility": matched_iv,
-                        "is_fresh": True,
-                        "timestamp": datetime.now().isoformat(),
-                    }
-                    tick_cache.update_tick(pos_sym, comm_tick)
-                    jnl.update_current_price(pos_sym, matched_bid or matched_ltp)
+                    tick_cache.update_tick(
+                        pos_sym,
+                        {
+                            "symbol": pos_sym,
+                            "underlying": und,
+                            "strike": stk,
+                            "option_type": ot,
+                            "last_price": fallback_ltp,
+                            "bid": round(fallback_ltp * 0.99, 2),
+                            "ask": round(fallback_ltp * 1.01, 2),
+                            "close": fallback_ltp,
+                            "implied_volatility": iv_val,
+                            "is_fresh": False,
+                            "timestamp": datetime.now().isoformat(),
+                        },
+                    )
+                    jnl.update_current_price(pos_sym, fallback_ltp)
                     updated_count += 1
-        except Exception as e:
-            logger.warning("Error syncing commodity open positions: %s", e)
+            except Exception as e:
+                logger.warning("Error syncing fallback commodity open positions: %s", e)
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._last_sync_stats = {

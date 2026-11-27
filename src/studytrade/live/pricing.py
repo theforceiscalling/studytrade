@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 
+from studytrade.data.fetchers.mcx_delayed import MCX_SYMBOLS, get_mcx_delayed_fetcher
 from studytrade.data.fetchers.nse_delayed import get_nse_delayed_fetcher
 from studytrade.math.bsm import bsm_price
 from studytrade.math.greeks import greeks
@@ -20,16 +21,18 @@ from studytrade.math.iv_solver import implied_volatility
 
 IST = timezone(timedelta(hours=5, minutes=30))
 DEFAULT_RISK_FREE = 0.07
-_EXPIRY_FORMATS = ("%d-%b-%Y", "%d-%m-%Y", "%Y-%m-%d")
+_EXPIRY_FORMATS = ("%d-%b-%Y", "%d%b%Y", "%d-%m-%Y", "%Y-%m-%d")
 _MAX_SPOT_SAMPLES = 500
 
 _spot_history: dict[str, list[tuple[datetime, float]]] = {}
 
 
-def _years_to_expiry(expiry: str, now: datetime) -> float:
+def _years_to_expiry(expiry: str, now: datetime, close_hour: int = 15, close_minute: int = 30) -> float:
     for fmt in _EXPIRY_FORMATS:
         try:
-            exp = datetime.strptime(expiry, fmt).replace(hour=15, minute=30, tzinfo=IST)
+            exp = datetime.strptime(expiry.strip().upper() if fmt == "%d%b%Y" else expiry, fmt).replace(
+                hour=close_hour, minute=close_minute, tzinfo=IST
+            )
             break
         except ValueError:
             continue
@@ -104,13 +107,19 @@ def get_live_option_prices(
     Raises RuntimeError if NSE returns no data (market closed, blocked, bad symbol).
     """
     symbol = symbol.upper().strip()
-    chain = get_nse_delayed_fetcher().fetch_index_chain(symbol, expiry)
+    is_mcx = symbol in MCX_SYMBOLS
+    chain = (
+        get_mcx_delayed_fetcher().fetch_option_chain(symbol, expiry)
+        if is_mcx
+        else get_nse_delayed_fetcher().fetch_index_chain(symbol, expiry)
+    )
     if not chain or chain["spot_price"] <= 0:
-        raise RuntimeError(f"No live option chain available from NSE for {symbol}")
+        src_name = "MCX" if is_mcx else "NSE"
+        raise RuntimeError(f"No live option chain available from {src_name} for {symbol}")
 
     now = datetime.now(IST)
     spot = chain["spot_price"]
-    t = _years_to_expiry(chain["expiry"], now)
+    t = _years_to_expiry(chain["expiry"], now, close_hour=23 if is_mcx else 15, close_minute=30)
 
     rows_by_strike = sorted(chain["strikes"], key=lambda x: float(x.get("strikePrice", 0.0)))
     if strikes_around_atm:
@@ -133,7 +142,7 @@ def get_live_option_prices(
 
     return {
         "symbol": symbol,
-        "instrument_type": get_nse_delayed_fetcher().chain_type(symbol),
+        "instrument_type": "Commodity" if is_mcx else get_nse_delayed_fetcher().chain_type(symbol),
         "spot": spot,
         "expiry": chain["expiry"],
         "years_to_expiry": round(t, 6),
