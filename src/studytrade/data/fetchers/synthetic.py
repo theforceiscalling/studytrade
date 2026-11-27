@@ -203,9 +203,9 @@ class SyntheticDataGenerator(BaseDataFetcher):
             elif underlying_symbol == "FINNIFTY":
                 base_iv = 0.125
             elif underlying_symbol == "CRUDEOILM":
-                base_iv = 0.32
+                base_iv = 0.50
             elif underlying_symbol == "NATURALGAS":
-                base_iv = 0.48
+                base_iv = 0.55
             else:
                 base_iv = 0.125
 
@@ -333,12 +333,31 @@ class SyntheticDataGenerator(BaseDataFetcher):
 
         for _, row in spot_df.iterrows():
             ts = row["timestamp"]
-            # Expiries: next 2 Thursdays
-            cur_thursday = ts + timedelta(days=(3 - ts.weekday()) % 7)
-            if cur_thursday <= ts:
-                cur_thursday += timedelta(days=7)
-            next_thursday = cur_thursday + timedelta(days=7)
-            active_expiries = [cur_thursday, next_thursday]
+            if underlying_symbol in ("CRUDEOILM", "NATURALGAS"):
+                # MCX Commodity monthly expiry cycle (~16th for Crude, ~24th for Natural Gas)
+                target_day = 16 if underlying_symbol == "CRUDEOILM" else 24
+                exp_year = ts.year
+                exp_month = ts.month
+                if ts.day >= target_day - 2:
+                    exp_month += 1
+                    if exp_month > 12:
+                        exp_month = 1
+                        exp_year += 1
+                cur_exp = ts.replace(year=exp_year, month=exp_month, day=target_day, hour=0, minute=0, second=0, microsecond=0)
+                next_month = exp_month + 1
+                next_year = exp_year
+                if next_month > 12:
+                    next_month = 1
+                    next_year += 1
+                next_exp = ts.replace(year=next_year, month=next_month, day=target_day, hour=0, minute=0, second=0, microsecond=0)
+                active_expiries = [cur_exp, next_exp]
+            else:
+                # NSE Equity Indices: next 2 Thursdays
+                cur_thursday = ts + timedelta(days=(3 - ts.weekday()) % 7)
+                if cur_thursday <= ts:
+                    cur_thursday += timedelta(days=7)
+                next_thursday = cur_thursday + timedelta(days=7)
+                active_expiries = [cur_thursday, next_thursday]
 
             if expiries is not None:
                 parsed_exp = [pd.to_datetime(e).tz_convert(TIMEZONE) for e in expiries]
