@@ -90,6 +90,20 @@ class SyntheticDataGenerator(BaseDataFetcher):
         dt = 1.0 / TRADING_DAYS_PER_YEAR
         spec = INSTRUMENTS.get(symbol, INSTRUMENTS["NIFTY"])
 
+        if spot_start == 21000.0:
+            if symbol == "BANKNIFTY":
+                spot_start = 48000.0
+            elif symbol == "FINNIFTY":
+                spot_start = 22000.0
+            elif symbol == "CRUDEOILM":
+                spot_start = 6200.0
+                if annual_vol == 0.16:
+                    annual_vol = 0.32
+            elif symbol == "NATURALGAS":
+                spot_start = 240.0
+                if annual_vol == 0.16:
+                    annual_vol = 0.50
+
         # Generate business day timestamps in IST
         date_range = pd.date_range(
             start=start_date,
@@ -186,6 +200,12 @@ class SyntheticDataGenerator(BaseDataFetcher):
                 base_iv = 0.115
             elif underlying_symbol == "BANKNIFTY":
                 base_iv = 0.138
+            elif underlying_symbol == "FINNIFTY":
+                base_iv = 0.125
+            elif underlying_symbol == "CRUDEOILM":
+                base_iv = 0.32
+            elif underlying_symbol == "NATURALGAS":
+                base_iv = 0.48
             else:
                 base_iv = 0.125
 

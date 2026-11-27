@@ -47,13 +47,14 @@ class TimeFrame(StrEnum):
 
 @dataclass(frozen=True)
 class InstrumentSpec:
-    """Specification for an underlying instrument on NSE."""
+    """Specification for an underlying instrument on NSE or MCX."""
 
     symbol: str
     lot_size: int
     tick_size: float
     strike_interval: float  # Gap between consecutive strikes (points)
     max_weekly_expiries: int  # Number of weekly expiries typically available
+    exchange: str = "NSE"
 
 
 # Standard NSE instruments (verify lot sizes against latest circular)
@@ -63,6 +64,7 @@ NIFTY = InstrumentSpec(
     tick_size=0.05,
     strike_interval=50.0,
     max_weekly_expiries=7,
+    exchange="NSE",
 )
 
 BANKNIFTY = InstrumentSpec(
@@ -71,6 +73,7 @@ BANKNIFTY = InstrumentSpec(
     tick_size=0.05,
     strike_interval=100.0,
     max_weekly_expiries=7,
+    exchange="NSE",
 )
 
 FINNIFTY = InstrumentSpec(
@@ -79,6 +82,26 @@ FINNIFTY = InstrumentSpec(
     tick_size=0.05,
     strike_interval=50.0,
     max_weekly_expiries=4,
+    exchange="NSE",
+)
+
+# Standard MCX Commodity instruments
+CRUDEOILM = InstrumentSpec(
+    symbol="CRUDEOILM",
+    lot_size=10,
+    tick_size=1.0,
+    strike_interval=50.0,
+    max_weekly_expiries=4,
+    exchange="MCX",
+)
+
+NATURALGAS = InstrumentSpec(
+    symbol="NATURALGAS",
+    lot_size=1250,
+    tick_size=0.10,
+    strike_interval=5.0,
+    max_weekly_expiries=4,
+    exchange="MCX",
 )
 
 # Registry for lookup by symbol
@@ -86,11 +109,13 @@ INSTRUMENTS: dict[str, InstrumentSpec] = {
     "NIFTY": NIFTY,
     "BANKNIFTY": BANKNIFTY,
     "FINNIFTY": FINNIFTY,
+    "CRUDEOILM": CRUDEOILM,
+    "NATURALGAS": NATURALGAS,
 }
 
 
 # ============================================================
-# NSE transaction cost constants
+# NSE & MCX transaction cost constants
 # ============================================================
 
 
@@ -98,25 +123,27 @@ INSTRUMENTS: dict[str, InstrumentSpec] = {
 class NSECostSchedule:
     """
     NSE India transaction cost schedule for F&O segment.
-
-    All percentages are stored as decimals (e.g., 0.0625% → 0.000625).
-
-    Total cost for an option buy-sell round trip:
-    ─────────────────────────────────────────────
-    brokerage       = 2 × brokerage_per_order
-    stt             = sell_turnover × stt_sell_rate
-    exchange_txn    = total_turnover × exchange_txn_rate
-    sebi_fee        = total_turnover × sebi_rate
-    gst             = (brokerage + exchange_txn) × gst_rate
-    stamp_duty      = buy_turnover × stamp_duty_buy_rate
-    ─────────────────────────────────────────────
-    total           = sum of all above
     """
 
     brokerage_per_order: float = 20.0  # ₹ flat
     stt_sell_rate: float = 0.000625  # 0.0625%
     exchange_txn_rate: float = 0.000495  # 0.0495%
     sebi_rate: float = 0.000001  # ₹10 per crore = 0.0001%
+    gst_rate: float = 0.18  # 18%
+    stamp_duty_buy_rate: float = 0.00003  # 0.003%
+
+
+@dataclass(frozen=True)
+class MCXCostSchedule:
+    """
+    MCX India transaction cost schedule for Commodity Options / Futures.
+    CTT (Commodity Transaction Tax) is 0.05% on Option Premium (sell side).
+    """
+
+    brokerage_per_order: float = 20.0  # ₹ flat
+    ctt_sell_rate: float = 0.0005  # 0.05%
+    exchange_txn_rate: float = 0.0005  # 0.05%
+    sebi_rate: float = 0.000001  # ₹10 per crore
     gst_rate: float = 0.18  # 18%
     stamp_duty_buy_rate: float = 0.00003  # 0.003%
 
