@@ -369,7 +369,7 @@ def paper_view(request: HttpRequest) -> HttpResponse:
         try:
             from studytrade.math.greeks import greeks
             und_sym = str(pos.get("underlying_symbol", "NIFTY"))
-            default_spot = 53500.0 if und_sym == "BANKNIFTY" else (24800.0 if und_sym == "FINNIFTY" else (6300.0 if und_sym == "CRUDEOILM" else (250.0 if und_sym == "NATURALGAS" else 25800.0)))
+            default_spot = 53500.0 if und_sym == "BANKNIFTY" else (24800.0 if und_sym == "FINNIFTY" else (7735.0 if und_sym == "CRUDEOILM" else (334.5 if und_sym == "NATURALGAS" else 25800.0)))
             
             if "expiry" in pos and pos["expiry"]:
                 try:

@@ -28,15 +28,15 @@ def generate_commodity_datasets(base_dir: str = "data") -> None:
     n_days = len(bdate_range)
     print(f"[*] Generating commodity datasets from {start_date} to {end_date} ({n_days} trading days)...")
 
-    # 1. CRUDEOILM
+    # 1. CRUDEOILM (Calibrated to current MCX Futures ~₹7,735/bbl)
     print("\n--- Generating CRUDEOILM (Crude Oil Mini) ---")
     t0 = time.time()
     crude_spot = gen.generate_spot(
         symbol="CRUDEOILM",
         start_date=start_date,
         n_days=n_days,
-        spot_start=6050.0,
-        target_spot_end=6320.0,
+        spot_start=6100.0,
+        target_spot_end=7735.0,
         annual_vol=0.32,
     )
     print(f"[+] CRUDEOILM Spot: {len(crude_spot)} rows (Close: {crude_spot['close'].iloc[-1]:.1f}) in {time.time()-t0:.2f}s")
@@ -47,6 +47,7 @@ def generate_commodity_datasets(base_dir: str = "data") -> None:
         start_date=start_date,
         end_date=end_date,
         spot_df=crude_spot,
+        num_strikes_each_side=30,  # Wider ladder so deep ITM 6400 CE up to 8500 CE are fully available
     )
     print(f"[+] CRUDEOILM Options: {len(crude_options)} quotes in {time.time()-t1:.2f}s")
 
@@ -55,7 +56,7 @@ def generate_commodity_datasets(base_dir: str = "data") -> None:
     store.save_options(crude_options, "CRUDEOILM")
     print(f"[✓] Saved CRUDEOILM to {data_path / 'processed' / 'CRUDEOILM'}")
 
-    # 2. NATURALGAS
+    # 2. NATURALGAS (Calibrated to current MCX Futures ~₹334.5/mmBtu)
     print("\n--- Generating NATURALGAS (Natural Gas) ---")
     t2 = time.time()
     ng_spot = gen.generate_spot(
@@ -63,7 +64,7 @@ def generate_commodity_datasets(base_dir: str = "data") -> None:
         start_date=start_date,
         n_days=n_days,
         spot_start=210.0,
-        target_spot_end=256.4,
+        target_spot_end=334.5,
         annual_vol=0.48,
     )
     print(f"[+] NATURALGAS Spot: {len(ng_spot)} rows (Close: {ng_spot['close'].iloc[-1]:.1f}) in {time.time()-t2:.2f}s")
@@ -74,6 +75,7 @@ def generate_commodity_datasets(base_dir: str = "data") -> None:
         start_date=start_date,
         end_date=end_date,
         spot_df=ng_spot,
+        num_strikes_each_side=25,
     )
     print(f"[+] NATURALGAS Options: {len(ng_options)} quotes in {time.time()-t3:.2f}s")
 

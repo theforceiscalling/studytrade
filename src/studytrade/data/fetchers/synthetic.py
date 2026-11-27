@@ -324,6 +324,7 @@ class SyntheticDataGenerator(BaseDataFetcher):
         expiries: list[datetime | str] | None = None,
         strikes: list[float] | None = None,
         spot_df: pd.DataFrame | None = None,
+        num_strikes_each_side: int = 15,
     ) -> pd.DataFrame:
         """Fetch synthetic option data across spot history."""
         if spot_df is None:
@@ -349,6 +350,7 @@ class SyntheticDataGenerator(BaseDataFetcher):
                     underlying_symbol=underlying_symbol,
                     spot_price=row["close"],
                     expiries=active_expiries,
+                    num_strikes_each_side=num_strikes_each_side,
                 )
                 if strikes is not None:
                     chain = chain[chain["strike"].isin(strikes)]
