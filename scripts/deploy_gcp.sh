@@ -21,7 +21,7 @@ PORT=8000
 
 echo "[1/6] Updating system packages & installing prerequisites..."
 apt-get update -y
-apt-get install -y python3-venv python3-pip python3-dev build-essential git nginx curl sqlite3 libatlas-base-dev
+apt-get install -y python3-venv python3-pip python3-dev build-essential git nginx curl sqlite3 libatlas-base-dev cron
 
 echo "[2/6] Configuring 2GB Swap Space (Essential for e2-micro 1GB RAM)..."
 if [ ! -f /swapfile ]; then

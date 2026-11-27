@@ -31,7 +31,8 @@ except Exception as e:
 " >> "${LOG_FILE}" 2>&1
 
 # Ensure permissions remain accessible by web worker
-chown -R www-data:www-data "${APP_DIR}/data" 2>/dev/null || true
+APP_USER=$(stat -c '%U' "${APP_DIR}" 2>/dev/null || echo "ubuntu")
+chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}/data" 2>/dev/null || true
 chmod -R 775 "${APP_DIR}/data" 2>/dev/null || true
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Daily market sync finished." >> "${LOG_FILE}"
