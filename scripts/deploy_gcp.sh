@@ -134,6 +134,13 @@ ln -sf /etc/nginx/sites-available/studytrade /etc/nginx/sites-enabled/studytrade
 nginx -t
 systemctl restart nginx
 
+echo "[7/7] Setting up daily automated Bhavcopy cron job (18:30 IST / 13:00 UTC)..."
+chmod +x \${APP_DIR}/scripts/auto_update_cron.sh
+touch /var/log/studytrade_daily_sync.log
+chown \${APP_USER}:\${APP_USER} /var/log/studytrade_daily_sync.log 2>/dev/null || true
+CRON_ENTRY="0 13 * * 1-5 /bin/bash \${APP_DIR}/scripts/auto_update_cron.sh"
+(crontab -l 2>/dev/null | grep -v "auto_update_cron.sh"; echo "\${CRON_ENTRY}") | crontab -
+
 PUBLIC_IP=\$(curl -s ifconfig.me || hostname -I | awk '{print \$1}')
 
 echo "========================================================================="
