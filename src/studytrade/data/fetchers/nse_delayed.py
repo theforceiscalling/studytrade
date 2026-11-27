@@ -13,9 +13,11 @@ Streams live/delayed quotes directly into:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import logging
+import threading
 import time
-from datetime import datetime
+from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any
 
 from curl_cffi import requests
@@ -24,6 +26,16 @@ from studytrade.live.session_engine import get_live_tick_cache
 from studytrade.paper.journal import PaperJournal
 
 logger = logging.getLogger("studytrade.nse_delayed")
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _is_nse_market_open_ist() -> bool:
+    """Return True if NSE F&O market is currently in live session (Mon-Fri 09:15-15:35 IST)."""
+    now = datetime.now(IST)
+    if now.weekday() >= 5:
+        return False
+    t = now.time()
+    return dtime(9, 10) <= t <= dtime(15, 35)
 
 
 class NSEOptionChainFetcher:
@@ -43,8 +55,10 @@ class NSEOptionChainFetcher:
         """NSE distinguishes index ('Indices') and stock ('Equity') option chains."""
         return "Indices" if symbol.upper() in cls.INDEX_SYMBOLS else "Equity"
 
-    def __init__(self, cache_ttl_seconds: int = 14) -> None:
+    def __init__(self, cache_ttl_seconds: int = 10) -> None:
         self.cache_ttl_seconds = cache_ttl_seconds
+        self._off_hours_ttl_seconds = 900
+        self._lock = threading.Lock()
         self._session: requests.Session | None = None
         self._last_fetch_time: dict[str, float] = {}
         self._cached_results: dict[str, dict[str, Any]] = {}
@@ -55,19 +69,20 @@ class NSEOptionChainFetcher:
         }
 
     def _get_session(self) -> requests.Session:
-        if self._session is None:
-            self._session = requests.Session(impersonate="chrome120")
-            self._session.headers.update({
-                "Referer": self.CHAIN_PAGE,
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept": "application/json, text/plain, */*",
-            })
-            # Warm up session with option chain page to establish Akamai cookies
-            try:
-                self._session.get(self.CHAIN_PAGE, timeout=10)
-            except Exception as e:
-                logger.warning(f"Failed to initialize NSE session cookies: {e}")
-        return self._session
+        with self._lock:
+            if self._session is None:
+                self._session = requests.Session(impersonate="chrome120")
+                self._session.headers.update({
+                    "Referer": self.CHAIN_PAGE,
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "application/json, text/plain, */*",
+                })
+                # Warm up session with option chain page to establish Akamai cookies
+                try:
+                    self._session.get(self.CHAIN_PAGE, timeout=5)
+                except Exception as e:
+                    logger.warning(f"Failed to initialize NSE session cookies: {e}")
+            return self._session
 
     @staticmethod
     def format_contract_symbol(underlying: str, expiry_str: str, strike: float, opt_type: str) -> str:
@@ -93,12 +108,13 @@ class NSEOptionChainFetcher:
     def fetch_index_chain(self, symbol: str = "NIFTY", expiry: str | None = None) -> dict[str, Any] | None:
         """
         Fetch option chain snapshot for an index from NSE website.
-        Respects `cache_ttl_seconds` to prevent excessive requests to NSE.
+        Uses tight TTL during live NSE hours and longer TTL after hours so
+        MCX/portal syncs remain sub-second.
         """
         now = time.time()
         cache_key = f"{symbol}|{expiry or ''}"
-        # Return cached result if within TTL
-        if cache_key in self._last_fetch_time and (now - self._last_fetch_time[cache_key]) < self.cache_ttl_seconds:
+        eff_ttl = self.cache_ttl_seconds if _is_nse_market_open_ist() else self._off_hours_ttl_seconds
+        if cache_key in self._last_fetch_time and (now - self._last_fetch_time[cache_key]) < eff_ttl:
             return self._cached_results.get(cache_key)
 
         sess = self._get_session()
@@ -106,16 +122,17 @@ class NSEOptionChainFetcher:
             target_expiry = expiry
             if not target_expiry:
                 info_url = self.CONTRACT_INFO_API.format(symbol=symbol)
-                r_info = sess.get(info_url, timeout=10)
+                r_info = sess.get(info_url, timeout=5)
                 if r_info.status_code == 200:
                     exp_dates = r_info.json().get("expiryDates", [])
                     if exp_dates:
                         target_expiry = exp_dates[0]
                 elif r_info.status_code in (401, 403, 404):
                     # Session expired or blocked, re-initialize
-                    self._session = None
+                    with self._lock:
+                        self._session = None
                     sess = self._get_session()
-                    r_info = sess.get(info_url, timeout=10)
+                    r_info = sess.get(info_url, timeout=5)
                     if r_info.status_code == 200:
                         exp_dates = r_info.json().get("expiryDates", [])
                         if exp_dates:
@@ -123,16 +140,18 @@ class NSEOptionChainFetcher:
 
             if not target_expiry:
                 logger.warning(f"No expiry date resolved for {symbol}")
-                return None
+                self._last_fetch_time[cache_key] = now
+                return self._cached_results.get(cache_key)
 
             # Fetch Option Chain v3
             chain_url = self.CHAIN_V3_API.format(
                 chain_type=self.chain_type(symbol), symbol=symbol, expiry=target_expiry
             )
-            r_chain = sess.get(chain_url, timeout=12)
+            r_chain = sess.get(chain_url, timeout=6)
             if r_chain.status_code != 200:
                 logger.warning(f"NSE chain API returned status {r_chain.status_code} for {symbol}")
-                return None
+                self._last_fetch_time[cache_key] = now
+                return self._cached_results.get(cache_key)
 
             raw_data = r_chain.json()
             records = raw_data.get("records", {})
@@ -266,28 +285,42 @@ class NSEOptionChainFetcher:
         spots_synced: dict[str, float] = {}
         updated_pos_symbols: set[str] = set()
 
-        # 1. Sync NSE Equity Indices
-        for sym in symbols:
-            if sym.upper() in MCX_SYMBOLS:
-                continue
-            chain_data = self.fetch_index_chain(sym)
-            if chain_data:
-                updated_count += self._sync_chain_to_cache(
-                    sym, chain_data, self.format_contract_symbol, tick_cache, jnl,
-                    open_pos_attr_map, spots_synced, updated_pos_symbols,
-                )
-
-        # 2. Sync MCX Commodities (CRUDEOILM, NATURALGAS + any open MCX position expiries)
+        # 1. Fetch NSE Equity Indices and MCX Commodities in parallel
+        nse_syms = [s for s in symbols if s.upper() not in MCX_SYMBOLS]
         mcx_targets: set[tuple[str, str | None]] = {("CRUDEOILM", None), ("NATURALGAS", None)}
         for p in open_positions:
             und = str(p.get("underlying_symbol", "")).upper()
             if und in MCX_SYMBOLS:
                 exp_str = str(p.get("expiry", ""))[:10] or None
                 mcx_targets.add((und, exp_str))
+        mcx_list = sorted(mcx_targets, key=lambda x: (x[0], x[1] or ""))
+
+        nse_results: list[tuple[str, dict[str, Any] | None]] = []
+        mcx_results: list[tuple[str, dict[str, Any] | None]] = []
+
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            nse_futs = {pool.submit(self.fetch_index_chain, sym): sym for sym in nse_syms}
+            mcx_futs = {pool.submit(mcx_fetcher.fetch_option_chain, sym, exp, force): sym for sym, exp in mcx_list}
+            for fut, sym in nse_futs.items():
+                try:
+                    nse_results.append((sym, fut.result()))
+                except Exception as exc:
+                    logger.warning("NSE parallel fetch error for %s: %s", sym, exc)
+            for fut, sym in mcx_futs.items():
+                try:
+                    mcx_results.append((sym, fut.result()))
+                except Exception as exc:
+                    logger.warning("MCX parallel fetch error for %s: %s", sym, exc)
+
+        for sym, chain_data in nse_results:
+            if chain_data:
+                updated_count += self._sync_chain_to_cache(
+                    sym, chain_data, self.format_contract_symbol, tick_cache, jnl,
+                    open_pos_attr_map, spots_synced, updated_pos_symbols,
+                )
 
         fetched_mcx_keys: set[tuple[str, str]] = set()
-        for sym, exp in sorted(mcx_targets, key=lambda x: (x[0], x[1] or "")):
-            chain_data = mcx_fetcher.fetch_option_chain(sym, expiry=exp, force=force)
+        for sym, chain_data in mcx_results:
             if chain_data:
                 resolved_exp = str(chain_data.get("expiry", ""))
                 if (sym, resolved_exp) in fetched_mcx_keys:

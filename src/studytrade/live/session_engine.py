@@ -80,6 +80,11 @@ class LiveTickCache:
         with self._lock:
             return self._ticks.get(token_or_symbol)
 
+    def get_all_ticks(self) -> dict[str, dict[str, Any]]:
+        """Return a shallow snapshot copy of all cached ticks."""
+        with self._lock:
+            return dict(self._ticks)
+
     @property
     def total_ticks(self) -> int:
         with self._lock:

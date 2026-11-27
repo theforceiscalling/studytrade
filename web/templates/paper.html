@@ -38,7 +38,7 @@
     <div class="col-md-3">
         <div class="stat-card">
             <div class="stat-label">Net Portfolio Delta ($\Delta$)</div>
-            <div class="stat-val {% if net_delta > 0 %}text-success{% elif net_delta < 0 %}text-danger{% else %}text-light{% endif %}">
+            <div id="netDeltaVal" class="stat-val {% if net_delta > 0 %}text-success{% elif net_delta < 0 %}text-danger{% else %}text-light{% endif %}">
                 {{ net_delta }}
             </div>
             <div class="small text-muted mt-1">₹ move per 1-pt index change</div>
@@ -47,21 +47,21 @@
     <div class="col-md-3">
         <div class="stat-card">
             <div class="stat-label">Net Portfolio Gamma ($\Gamma$)</div>
-            <div class="stat-val text-info">{{ net_gamma }}</div>
+            <div id="netGammaVal" class="stat-val text-info">{{ net_gamma }}</div>
             <div class="small text-muted mt-1">Rate of delta change</div>
         </div>
     </div>
     <div class="col-md-3">
         <div class="stat-card">
             <div class="stat-label">Net Portfolio Vega ($\mathcal{V}_{1\%}$)</div>
-            <div class="stat-val text-warning">{{ net_vega }}</div>
+            <div id="netVegaVal" class="stat-val text-warning">{{ net_vega }}</div>
             <div class="small text-muted mt-1">P&L impact per +1% IV move</div>
         </div>
     </div>
     <div class="col-md-3">
         <div class="stat-card border-danger-subtle">
             <div class="stat-label">Daily Theta Bleed ($\Theta$)</div>
-            <div class="stat-val text-danger">₹{{ total_theta_bleed }} / day</div>
+            <div id="thetaBleedVal" class="stat-val text-danger">₹{{ total_theta_bleed }} / day</div>
             <div class="small text-muted mt-1">Time decay cost to hold open positions</div>
         </div>
     </div>
@@ -254,7 +254,7 @@
                     </thead>
                     <tbody>
                         {% for sig in realtime_signals %}
-                        <tr>
+                        <tr class="signal-live-row" data-sig-symbol="{{ sig.symbol }}" data-lot-size="{{ sig.lot_size }}">
                             <td>
                                 {% if "CALL" in sig.direction %}
                                     <span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1">
@@ -272,10 +272,10 @@
                                 <span class="font-monospace ms-1">{{ sig.strike }}</span>
                             </td>
                             <td class="font-monospace text-info">{{ sig.target_delta }}</td>
-                            <td class="font-monospace fw-bold text-success">₹{{ sig.entry_price|floatformat:2 }}</td>
-                            <td class="font-monospace text-success">₹{{ sig.target_price|floatformat:2 }}</td>
-                            <td class="font-monospace text-danger">₹{{ sig.stop_loss_price|floatformat:2 }}</td>
-                            <td class="font-monospace">₹{{ sig.capital_required|floatformat:2 }}</td>
+                            <td class="font-monospace fw-bold text-success sig-entry">₹{{ sig.entry_price|floatformat:2 }}</td>
+                            <td class="font-monospace text-success sig-tp">₹{{ sig.target_price|floatformat:2 }}</td>
+                            <td class="font-monospace text-danger sig-sl">₹{{ sig.stop_loss_price|floatformat:2 }}</td>
+                            <td class="font-monospace sig-cap">₹{{ sig.capital_required|floatformat:2 }}</td>
                             <td>
                                 <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
                                     {{ sig.confidence_pct }}%
@@ -327,7 +327,7 @@
                         {% if nse_stats.last_synced %}({{ nse_stats.last_synced|slice:"11:19" }}){% endif %}
                     </span>
                     <span class="badge bg-dark border border-secondary text-info font-monospace py-1 px-2 small">
-                        <i class="bi bi-stopwatch me-1"></i>Auto-Refresh: <span id="autoSyncCountdown">15s</span>
+                        <i class="bi bi-stopwatch me-1"></i>Auto-Refresh: <span id="autoSyncCountdown">10s</span>
                     </span>
                     <button id="btnSyncNse" class="btn btn-sm btn-outline-info px-3" onclick="syncMarketPrices(this)">
                         <i class="bi bi-arrow-repeat me-1"></i> Sync Market Prices (NSE & MCX)
@@ -729,15 +729,16 @@ async function syncMarketPrices(btn, isQuiet = false) {
     }
 
     try {
-        const res = await fetch("{% url 'dashboard:api_sync_nse_delayed' %}", {
+        const res = await fetch(`{% url 'dashboard:api_sync_nse_delayed' %}?_t=${Date.now()}`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" }
+            cache: "no-store",
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" }
         });
         const data = await res.json();
         if (data.success && data.stats) {
             const stats = data.stats;
 
-            // Update capital metrics dynamically
+            // 1. Update capital metrics dynamically
             const depEl = document.getElementById('deployedCapitalVal');
             if (depEl && stats.deployed_capital !== undefined) {
                 depEl.textContent = `₹${Number(stats.deployed_capital).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
@@ -747,12 +748,29 @@ async function syncMarketPrices(btn, isQuiet = false) {
                 availEl.textContent = `₹${Number(stats.available_capital).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
             }
 
-            // Update open position rows smoothly without reloading page
+            // 2. Update Portfolio Greeks dynamically
+            if (stats.greeks) {
+                const ndEl = document.getElementById('netDeltaVal');
+                if (ndEl) ndEl.textContent = stats.greeks.net_delta;
+                const ngEl = document.getElementById('netGammaVal');
+                if (ngEl) ngEl.textContent = stats.greeks.net_gamma;
+                const nvEl = document.getElementById('netVegaVal');
+                if (nvEl) nvEl.textContent = stats.greeks.net_vega;
+                const tbEl = document.getElementById('thetaBleedVal');
+                if (tbEl) tbEl.textContent = `₹${stats.greeks.total_theta_bleed} / day`;
+            }
+
+            // 3. Update open position rows smoothly without reloading page
             if (Array.isArray(stats.positions)) {
                 stats.positions.forEach(pos => {
                     const ltpEl = document.getElementById(`pos-ltp-${pos.id}`);
                     if (ltpEl) {
-                        ltpEl.textContent = `₹${Number(pos.current_price).toFixed(2)}`;
+                        const newText = `₹${Number(pos.current_price).toFixed(2)}`;
+                        if (ltpEl.textContent !== newText) {
+                            ltpEl.textContent = newText;
+                            ltpEl.classList.add('text-info');
+                            setTimeout(() => ltpEl.classList.remove('text-info'), 600);
+                        }
                     }
                     const pnlEl = document.getElementById(`pos-pnl-${pos.id}`);
                     if (pnlEl) {
@@ -764,7 +782,40 @@ async function syncMarketPrices(btn, isQuiet = false) {
                 });
             }
 
-            // Update market feed status badge
+            // 4. Update Real-Time Strategy Signals table dynamically
+            if (stats.tick_quotes) {
+                const tpPct = parseFloat(document.getElementById('cfgProfitTarget')?.value || "50") || 50;
+                const slPct = parseFloat(document.getElementById('cfgStopLoss')?.value || "30") || 30;
+                document.querySelectorAll('.signal-live-row').forEach(row => {
+                    const sym = row.dataset.sigSymbol;
+                    const q = stats.tick_quotes[sym];
+                    if (!q) return;
+                    const liveEntry = Number(q.ask || q.last_price);
+                    if (!(liveEntry > 0)) return;
+                    const lotSize = parseInt(row.dataset.lotSize || "25", 10);
+                    const liveTp = +(liveEntry * (1 + tpPct / 100)).toFixed(2);
+                    const liveSl = +(liveEntry * Math.max(0, 1 - slPct / 100)).toFixed(2);
+                    const liveCap = +(liveEntry * lotSize).toFixed(2);
+
+                    const eEl = row.querySelector('.sig-entry');
+                    if (eEl) eEl.textContent = `₹${liveEntry.toFixed(2)}`;
+                    const tpEl = row.querySelector('.sig-tp');
+                    if (tpEl) tpEl.textContent = `₹${liveTp.toFixed(2)}`;
+                    const slEl = row.querySelector('.sig-sl');
+                    if (slEl) slEl.textContent = `₹${liveSl.toFixed(2)}`;
+                    const capEl = row.querySelector('.sig-cap');
+                    if (capEl) capEl.textContent = `₹${liveCap.toFixed(2)}`;
+
+                    const buyBtn = row.querySelector('.btn-buy-paper');
+                    if (buyBtn) {
+                        buyBtn.dataset.price = liveEntry.toFixed(2);
+                        buyBtn.dataset.target = liveTp.toFixed(2);
+                        buyBtn.dataset.stop = liveSl.toFixed(2);
+                    }
+                });
+            }
+
+            // 5. Update market feed status badge
             const badge = document.getElementById('nseSyncStatusBadge');
             if (badge) {
                 const nowTime = new Date().toLocaleTimeString('en-IN', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
@@ -785,29 +836,29 @@ async function syncMarketPrices(btn, isQuiet = false) {
     }
 }
 
-// 15-second non-blocking auto-updater for market prices
-let syncCountdown = 15;
+// 10-second non-blocking auto-updater for dynamic pricing
+const AUTO_SYNC_INTERVAL_SEC = 10;
+let syncCountdown = AUTO_SYNC_INTERVAL_SEC;
+function triggerImmediateDynamicSync() {
+    const cdEl = document.getElementById('autoSyncCountdown');
+    if (cdEl) cdEl.textContent = "Updating...";
+    syncMarketPrices(null, true).then(() => {
+        syncCountdown = AUTO_SYNC_INTERVAL_SEC;
+        if (cdEl) cdEl.textContent = `${syncCountdown}s`;
+    });
+}
 document.addEventListener('DOMContentLoaded', () => {
-    setTimeout(() => {
-        const cdEl = document.getElementById('autoSyncCountdown');
-        if (cdEl) cdEl.textContent = "Updating...";
-        syncMarketPrices(null, true).then(() => {
-            syncCountdown = 15;
-            if (cdEl) cdEl.textContent = `${syncCountdown}s`;
-        });
-    }, 400);
+    setTimeout(triggerImmediateDynamicSync, 250);
+});
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted) triggerImmediateDynamicSync();
 });
 setInterval(() => {
     const cdEl = document.getElementById('autoSyncCountdown');
     if (!cdEl) return;
     syncCountdown--;
     if (syncCountdown <= 0) {
-        syncCountdown = 15;
-        cdEl.textContent = "Updating...";
-        syncMarketPrices(null, true).then(() => {
-            syncCountdown = 15;
-            cdEl.textContent = `${syncCountdown}s`;
-        });
+        triggerImmediateDynamicSync();
     } else {
         cdEl.textContent = `${syncCountdown}s`;
     }

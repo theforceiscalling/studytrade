@@ -550,63 +550,60 @@
     }
 
     function resetSpotSlider(origSpot) {
+        _gsSliderDirty = false;
         document.getElementById('spotRangeSlider').value = origSpot;
         document.getElementById('simSpotDisplay').innerText = origSpot.toFixed(1);
-        updateSimulatedGex(origSpot);
+        refreshCockpitDynamicPrices();
+    }
+
+    function applyGexProfileData(data) {
+        renderGexChart(data.chart_data);
+        document.getElementById('callWallVal').innerText = Math.round(data.call_wall);
+        document.getElementById('putWallVal').innerText = Math.round(data.put_wall);
+        document.getElementById('gammaFlipVal').innerText = Math.round(data.gamma_flip);
+        document.getElementById('netGexVal').innerText = `₹${data.net_gex_lakhs}L`;
+        document.getElementById('callDistBadge').innerText = `${data.call_dist_pts} pts (${data.call_dist_pct}%)`;
+        document.getElementById('putDistBadge').innerText = `${data.put_dist_pts} pts (${data.put_dist_pct}%)`;
+
+        const regimeBadge = document.getElementById('regimeBadge');
+        if (data.is_negative_gamma) {
+            regimeBadge.innerHTML = `
+                <span class="badge bg-danger-subtle text-danger border border-danger p-2 fs-6">
+                    <i class="bi bi-exclamation-triangle-fill me-1"></i> Negative Gamma (Squeeze Zone)
+                </span>
+                <div class="small text-muted mt-2">Dealers hedge pro-cyclically: Volatility accelerator</div>
+            `;
+        } else {
+            regimeBadge.innerHTML = `
+                <span class="badge bg-success-subtle text-success border border-success p-2 fs-6">
+                    <i class="bi bi-shield-check me-1"></i> Positive Gamma (Stable)
+                </span>
+                <div class="small text-muted mt-2">Dealers sell rips & buy dips: Volatility dampener</div>
+            `;
+        }
+
+        const cScore = Math.round(data.call_squeeze_score);
+        const pScore = Math.round(data.put_cascade_score);
+        document.getElementById('callScoreVal').innerHTML = `${cScore}<span class="small text-muted">/100</span>`;
+        document.getElementById('putScoreVal').innerHTML = `${pScore}<span class="small text-muted">/100</span>`;
+
+        const callBar = document.getElementById('callScoreBar');
+        callBar.style.width = `${cScore}%`;
+        callBar.className = `progress-bar ${cScore >= 65 ? 'bg-danger' : (cScore >= 40 ? 'bg-warning' : 'bg-success')}`;
+
+        const putBar = document.getElementById('putScoreBar');
+        putBar.style.width = `${pScore}%`;
+        putBar.className = `progress-bar ${pScore >= 65 ? 'bg-danger' : (pScore >= 40 ? 'bg-warning' : 'bg-secondary')}`;
     }
 
     async function updateSimulatedGex(simSpot) {
         try {
-            const url = `{% url 'dashboard:api_gamma_profile' %}?symbol=${currentSymbol}&date=${selectedDate}&expiry=${selectedExpiry}&sim_spot=${simSpot}`;
-            const res = await fetch(url);
+            const url = `{% url 'dashboard:api_gamma_profile' %}?symbol=${currentSymbol}&date=${selectedDate}&expiry=${selectedExpiry}&sim_spot=${simSpot}&_t=${Date.now()}`;
+            const res = await fetch(url, { cache: "no-store" });
             const data = await res.json();
             if (!data.success) return;
 
-            // Re-render Plotly chart with simulated spot
-            renderGexChart(data.chart_data);
-
-            // Update KPI cards
-            document.getElementById('callWallVal').innerText = Math.round(data.call_wall);
-            document.getElementById('putWallVal').innerText = Math.round(data.put_wall);
-            document.getElementById('gammaFlipVal').innerText = Math.round(data.gamma_flip);
-            document.getElementById('netGexVal').innerText = `₹${data.net_gex_lakhs}L`;
-            document.getElementById('callDistBadge').innerText = `${data.call_dist_pts} pts (${data.call_dist_pct}%)`;
-            document.getElementById('putDistBadge').innerText = `${data.put_dist_pts} pts (${data.put_dist_pct}%)`;
-
-            // Update Regime Badge
-            const regimeBadge = document.getElementById('regimeBadge');
-            if (data.is_negative_gamma) {
-                regimeBadge.innerHTML = `
-                    <span class="badge bg-danger-subtle text-danger border border-danger p-2 fs-6">
-                        <i class="bi bi-exclamation-triangle-fill me-1"></i> Negative Gamma (Squeeze Zone)
-                    </span>
-                    <div class="small text-muted mt-2">Dealers hedge pro-cyclically: Volatility accelerator</div>
-                `;
-            } else {
-                regimeBadge.innerHTML = `
-                    <span class="badge bg-success-subtle text-success border border-success p-2 fs-6">
-                        <i class="bi bi-shield-check me-1"></i> Positive Gamma (Stable)
-                    </span>
-                    <div class="small text-muted mt-2">Dealers sell rips & buy dips: Volatility dampener</div>
-                `;
-            }
-
-            // Update Squeeze scores & progress bars
-            const cScore = Math.round(data.call_squeeze_score);
-            const pScore = Math.round(data.put_cascade_score);
-            
-            document.getElementById('callScoreVal').innerHTML = `${cScore}<span class="small text-muted">/100</span>`;
-            document.getElementById('putScoreVal').innerHTML = `${pScore}<span class="small text-muted">/100</span>`;
-            
-            const callBar = document.getElementById('callScoreBar');
-            callBar.style.width = `${cScore}%`;
-            callBar.className = `progress-bar ${cScore >= 65 ? 'bg-danger' : (cScore >= 40 ? 'bg-warning' : 'bg-success')}`;
-
-            const putBar = document.getElementById('putScoreBar');
-            putBar.style.width = `${pScore}%`;
-            putBar.className = `progress-bar ${pScore >= 65 ? 'bg-danger' : (pScore >= 40 ? 'bg-warning' : 'bg-secondary')}`;
-
-            // Check dynamic strategy signals
+            applyGexProfileData(data);
             refreshStrategySignals(simSpot);
         } catch (e) {
             console.error("Failed to update simulated GEX:", e);
@@ -652,10 +649,11 @@
 
     async function refreshStrategySignals(simSpot) {
         try {
-            const url = `{% url 'dashboard:api_run_gamma_strategy' %}`;
+            const url = `{% url 'dashboard:api_run_gamma_strategy' %}?_t=${Date.now()}`;
             const res = await fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                cache: 'no-store',
+                headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
                 body: JSON.stringify({
                     symbol: currentSymbol,
                     date: selectedDate,
@@ -664,7 +662,7 @@
                     target_delta: currentTargetDelta,
                     profit_target_pct: currentProfitTarget,
                     stop_loss_pct: currentStopLoss,
-                    sim_spot: simSpot.toString()
+                    sim_spot: (simSpot !== null && simSpot !== undefined) ? simSpot.toString() : ""
                 })
             });
             const data = await res.json();
@@ -971,6 +969,40 @@
             alert("Error applying custom settings: " + e);
         }
     }
+
+    // Dynamic Live Pricing Auto-Updater for Gamma Squeeze Cockpit (every 12s)
+    let _gsSliderDirty = false;
+    document.getElementById('spotRangeSlider')?.addEventListener('input', () => {
+        _gsSliderDirty = true;
+    });
+
+    async function refreshCockpitDynamicPrices() {
+        if (_gsSliderDirty || window._gsSyncing) return;
+        window._gsSyncing = true;
+        try {
+            const url = `{% url 'dashboard:api_gamma_profile' %}?symbol=${encodeURIComponent(currentSymbol)}&date=${encodeURIComponent(selectedDate)}&expiry=${encodeURIComponent(selectedExpiry)}&_t=${Date.now()}`;
+            const res = await fetch(url, { cache: "no-store" });
+            const data = await res.json();
+            if (data.success && data.spot_price) {
+                const sp = Number(data.spot_price);
+                const disp = document.getElementById('simSpotDisplay');
+                if (disp) disp.textContent = sp.toFixed(1);
+                const slider = document.getElementById('spotRangeSlider');
+                if (slider) slider.value = sp;
+                applyGexProfileData(data);
+                await refreshStrategySignals("");
+            }
+        } catch (e) {
+            console.debug("Dynamic cockpit refresh skipped:", e);
+        } finally {
+            window._gsSyncing = false;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        setTimeout(refreshCockpitDynamicPrices, 350);
+    });
+    setInterval(refreshCockpitDynamicPrices, 12000);
 </script>
 
 <!-- Customise Signal Settings Modal -->

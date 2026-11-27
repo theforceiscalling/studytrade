@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
+from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
@@ -353,51 +354,45 @@ def risk_view(request: HttpRequest) -> HttpResponse:
 # ---------------------------------------------------------------------------
 
 
-def paper_view(request: HttpRequest) -> HttpResponse:
-    journal = PaperJournal(str(DATA_DIR / "paper_journal.db"))
-    paper_days = journal.get_paper_duration_days()
-    trades_df = journal.get_trades_dataframe()
-    open_positions = journal.get_open_positions()
+def _compute_portfolio_greeks(open_positions: list[dict[str, Any]]) -> dict[str, float]:
+    """Compute aggregate portfolio Delta, Gamma, Vega, and daily Theta bleed using live spot when available."""
+    from datetime import datetime
+    from studytrade.live.session_engine import get_live_tick_cache
+    from studytrade.math.greeks import greeks
 
-    # Aggregate Greeks
+    tick_cache = get_live_tick_cache()
     net_delta = 0.0
     net_gamma = 0.0
     net_vega = 0.0
     total_theta_bleed = 0.0
+    now_date = datetime.now().date()
 
     for pos in open_positions:
         try:
-            from studytrade.math.greeks import greeks
-            from studytrade.live.session_engine import get_live_tick_cache
             und_sym = str(pos.get("underlying_symbol", "NIFTY"))
-            default_spot = 53500.0 if und_sym == "BANKNIFTY" else (24800.0 if und_sym == "FINNIFTY" else (7735.0 if und_sym == "CRUDEOILM" else (334.5 if und_sym == "NATURALGAS" else 25800.0)))
-            live_spot_tick = get_live_tick_cache().get_tick(und_sym)
+            default_spot = (
+                53500.0 if und_sym == "BANKNIFTY" else
+                (24800.0 if und_sym == "FINNIFTY" else
+                 (7735.0 if und_sym == "CRUDEOILM" else
+                  (334.5 if und_sym == "NATURALGAS" else 25800.0)))
+            )
+            live_spot_tick = tick_cache.get_tick(und_sym)
             if live_spot_tick and float(live_spot_tick.get("last_price") or 0.0) > 0:
                 default_spot = float(live_spot_tick["last_price"])
-            
-            if "expiry" in pos and pos["expiry"]:
+
+            t_y = 3.5 / 365.0
+            if pos.get("expiry"):
                 try:
                     exp_date = pd.to_datetime(pos["expiry"]).date()
-                    now_date = datetime.now().date()
-                    dte_d = max(1.0, float((exp_date - now_date).days))
-                    t_y = dte_d / 365.0
+                    t_y = max(1.0, float((exp_date - now_date).days)) / 365.0
                 except Exception:
-                    t_y = 3.5 / 365.0
-            else:
-                t_y = 3.5 / 365.0
+                    pass
 
             opt_type_enum = OptionType.CALL if pos.get("option_type") == "CE" else OptionType.PUT
             iv_val = float(pos.get("entry_iv", 11.2))
             sigma = iv_val / 100.0 if iv_val > 1.0 else iv_val
-            
-            g = greeks(
-                opt_type_enum,
-                default_spot,
-                float(pos.get("strike", default_spot)),
-                t_y,
-                0.07,
-                sigma,
-            )
+
+            g = greeks(opt_type_enum, default_spot, float(pos.get("strike", default_spot)), t_y, 0.07, sigma)
             qty = float(pos.get("n_lots", 1)) * float(pos.get("lot_size", 25))
             net_delta += float(g.delta) * qty
             net_gamma += float(g.gamma) * qty
@@ -405,6 +400,27 @@ def paper_view(request: HttpRequest) -> HttpResponse:
             total_theta_bleed += float(g.theta_daily) * qty
         except Exception:
             pass
+
+    return {
+        "net_delta": round(net_delta, 2),
+        "net_gamma": round(net_gamma, 4),
+        "net_vega": round(net_vega, 2),
+        "total_theta_bleed": round(total_theta_bleed, 2),
+    }
+
+
+@never_cache
+def paper_view(request: HttpRequest) -> HttpResponse:
+    journal = PaperJournal(str(DATA_DIR / "paper_journal.db"))
+    paper_days = journal.get_paper_duration_days()
+    trades_df = journal.get_trades_dataframe()
+    open_positions = journal.get_open_positions()
+
+    greeks_agg = _compute_portfolio_greeks(open_positions)
+    net_delta = greeks_agg["net_delta"]
+    net_gamma = greeks_agg["net_gamma"]
+    net_vega = greeks_agg["net_vega"]
+    total_theta_bleed = greeks_agg["total_theta_bleed"]
 
     # Capital tracking & PnL calculation
     INITIAL_CAPITAL = 20000.0
@@ -445,7 +461,7 @@ def paper_view(request: HttpRequest) -> HttpResponse:
 
             if sym in ("CRUDEOILM", "NATURALGAS"):
                 from studytrade.data.fetchers.mcx_delayed import overlay_live_mcx_on_chain
-                spot_close, opt_slice = overlay_live_mcx_on_chain(sym, spot_close, opt_slice)
+                spot_close, opt_slice = overlay_live_mcx_on_chain(sym, spot_close, opt_slice, cache_only=True)
                 if not spot_slice.empty:
                     spot_slice = spot_slice.copy()
                     spot_slice.loc[spot_slice.index[-1], "close"] = spot_close
@@ -996,12 +1012,14 @@ def api_sync_bhavcopy(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"success": False, "error": str(exc)}, status=500)
 
 
+@never_cache
 @csrf_exempt
 @require_POST
 def api_sync_nse_delayed_prices(request: HttpRequest) -> JsonResponse:
     """Fetch official delayed option chain from NSE & MCX and update tick cache & open positions."""
     try:
         from studytrade.data.fetchers.nse_delayed import get_nse_delayed_fetcher
+        from studytrade.live.session_engine import get_live_tick_cache
         from studytrade.paper.journal import PaperJournal
 
         fetcher = get_nse_delayed_fetcher()
@@ -1043,6 +1061,20 @@ def api_sync_nse_delayed_prices(request: HttpRequest) -> JsonResponse:
         stats["deployed_capital"] = round(deployed, 2)
         stats["available_capital"] = round(available_cap, 2)
         stats["total_unrealized_pnl"] = round(total_unrealized_pnl, 2)
+        stats["greeks"] = _compute_portfolio_greeks(open_positions)
+
+        # Lightweight snapshot of live ticks for dynamic signal table pricing
+        tick_cache = get_live_tick_cache()
+        tick_quotes = {}
+        for k, v in tick_cache.get_all_ticks().items():
+            ltp_q = float(v.get("last_price") or 0.0)
+            if ltp_q > 0 and v.get("strike"):
+                tick_quotes[k] = {
+                    "last_price": ltp_q,
+                    "ask": float(v.get("ask") or ltp_q),
+                    "bid": float(v.get("bid") or ltp_q),
+                }
+        stats["tick_quotes"] = tick_quotes
 
         return JsonResponse(
             {
@@ -1055,6 +1087,7 @@ def api_sync_nse_delayed_prices(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"success": False, "error": str(exc)}, status=500)
 
 
+@never_cache
 @require_GET
 def api_live_option_prices(request: HttpRequest) -> JsonResponse:
     """Live priced NSE option chain (index or stock) with theoretical value and Greeks."""
@@ -1681,6 +1714,7 @@ def _trader_defaults() -> tuple[float, float, float, float]:
         return 0.35, 50.0, 30.0, 60.0
 
 
+@never_cache
 def gamma_squeeze_view(request: HttpRequest) -> HttpResponse:
     default_delta, default_tp, default_sl, default_threshold = _trader_defaults()
 
@@ -1739,7 +1773,7 @@ def gamma_squeeze_view(request: HttpRequest) -> HttpResponse:
 
             if not sim_spot_str and dates and selected_date == dates[-1] and symbol in ("CRUDEOILM", "NATURALGAS"):
                 from studytrade.data.fetchers.mcx_delayed import overlay_live_mcx_on_chain
-                spot_close, target_chain = overlay_live_mcx_on_chain(symbol, spot_close, target_chain)
+                spot_close, target_chain = overlay_live_mcx_on_chain(symbol, spot_close, target_chain, cache_only=True)
 
             lot_size = INSTRUMENTS.get(symbol, INSTRUMENTS["NIFTY"]).lot_size
             gex_prof = compute_gex_profile(target_chain, spot_price=spot_close, lot_size=lot_size)
@@ -1860,6 +1894,7 @@ def gamma_squeeze_view(request: HttpRequest) -> HttpResponse:
     return render(request, "gamma_squeeze.html", context)
 
 
+@never_cache
 @require_GET
 def api_gamma_profile(request: HttpRequest) -> JsonResponse:
 
@@ -1884,6 +1919,11 @@ def api_gamma_profile(request: HttpRequest) -> JsonResponse:
 
     spot_slice = spot_df[spot_df["timestamp"].dt.strftime("%Y-%m-%d") == date_str]
     default_spot = float(spot_slice["close"].iloc[-1]) if not spot_slice.empty else float(filtered["strike"].mean())
+
+    latest_date_str = opt_df["timestamp"].max().strftime("%Y-%m-%d") if not opt_df.empty else ""
+    if not sim_spot_str and date_str == latest_date_str and symbol.upper() in ("CRUDEOILM", "NATURALGAS"):
+        from studytrade.data.fetchers.mcx_delayed import overlay_live_mcx_on_chain
+        default_spot, filtered = overlay_live_mcx_on_chain(symbol, default_spot, filtered, cache_only=False)
 
     spot_price = float(sim_spot_str) if sim_spot_str else default_spot
     lot_size = INSTRUMENTS.get(symbol, INSTRUMENTS["NIFTY"]).lot_size
@@ -1927,6 +1967,7 @@ def api_gamma_profile(request: HttpRequest) -> JsonResponse:
     )
 
 
+@never_cache
 @csrf_exempt
 @require_POST
 def api_run_gamma_strategy(request: HttpRequest) -> JsonResponse:
@@ -1951,9 +1992,16 @@ def api_run_gamma_strategy(request: HttpRequest) -> JsonResponse:
         if spot_slice.empty:
             spot_slice = spot_df.tail(2)
 
+        latest_date_str = opt_df["timestamp"].max().strftime("%Y-%m-%d") if not opt_df.empty else ""
         if sim_spot_str:
             spot_slice = spot_slice.copy()
             spot_slice.loc[spot_slice.index[-1], "close"] = float(sim_spot_str)
+        elif date_str == latest_date_str and symbol.upper() in ("CRUDEOILM", "NATURALGAS") and not spot_slice.empty:
+            from studytrade.data.fetchers.mcx_delayed import overlay_live_mcx_on_chain
+            cur_s = float(spot_slice["close"].iloc[-1])
+            live_s, filtered = overlay_live_mcx_on_chain(symbol, cur_s, filtered, cache_only=False)
+            spot_slice = spot_slice.copy()
+            spot_slice.loc[spot_slice.index[-1], "close"] = live_s
 
         default_delta, default_tp, default_sl, default_threshold = _trader_defaults()
         threshold = float(params.get("threshold", default_threshold))

@@ -86,7 +86,9 @@ WorkingDirectory=${APP_DIR}/web
 Environment="PATH=${APP_DIR}/.venv/bin"
 Environment="PYTHONPATH=${APP_DIR}/src:${APP_DIR}/web"
 ExecStart=${APP_DIR}/.venv/bin/gunicorn \
-    --workers 2 \
+    --workers 1 \
+    --worker-class gthread \
+    --threads 8 \
     --bind 127.0.0.1:${PORT} \
     --timeout 120 \
     --access-logfile - \

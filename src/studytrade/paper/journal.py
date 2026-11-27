@@ -28,9 +28,11 @@ class PaperJournal:
 
     def _init_db(self) -> None:
         """Initialize tables for paper orders, trades, and equity snapshots."""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
         try:
             cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA busy_timeout=5000;")
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS paper_trades (

@@ -17,6 +17,7 @@ import html
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -36,8 +37,9 @@ class MCXOptionChainFetcher:
     OPTION_CHAIN_PAGE = "https://www.mcxindia.com/market-data/option-chain"
     GET_CHAIN_API = "https://www.mcxindia.com/GetOptionChain"
 
-    def __init__(self, cache_ttl_seconds: int = 14) -> None:
+    def __init__(self, cache_ttl_seconds: int = 10) -> None:
         self.cache_ttl_seconds = cache_ttl_seconds
+        self._lock = threading.Lock()
         self._session: requests.Session | None = None
         self._symbol_expiries: dict[str, list[str]] = {}
         self._metadata_fetched_at: float = 0.0
@@ -45,18 +47,19 @@ class MCXOptionChainFetcher:
         self._cached_results: dict[str, dict[str, Any]] = {}
 
     def _get_session(self, force_refresh: bool = False) -> requests.Session:
-        if self._session is None or force_refresh:
-            self._session = requests.Session(impersonate="chrome120")
-            self._session.headers.update({
-                "Referer": self.OPTION_CHAIN_PAGE,
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "X-Requested-With": "XMLHttpRequest",
-            })
-            self._refresh_symbol_metadata()
-        elif (time.time() - self._metadata_fetched_at) > 3600 or not self._symbol_expiries:
-            self._refresh_symbol_metadata()
-        return self._session
+        with self._lock:
+            if self._session is None or force_refresh:
+                self._session = requests.Session(impersonate="chrome120")
+                self._session.headers.update({
+                    "Referer": self.OPTION_CHAIN_PAGE,
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "X-Requested-With": "XMLHttpRequest",
+                })
+                self._refresh_symbol_metadata()
+            elif (time.time() - self._metadata_fetched_at) > 3600 or not self._symbol_expiries:
+                self._refresh_symbol_metadata()
+            return self._session
 
     def _refresh_symbol_metadata(self) -> None:
         """Load the option chain page to establish session cookies and parse available expiries."""
@@ -168,6 +171,10 @@ class MCXOptionChainFetcher:
     def clear_cache(self) -> None:
         self._last_fetch_time.clear()
 
+    def get_cached_chain(self, symbol: str, expiry: str | None = None) -> dict[str, Any] | None:
+        """Return cached chain immediately without network I/O."""
+        return self._cached_results.get(f"{symbol.upper().strip()}|{expiry or ''}")
+
     def fetch_option_chain(
         self,
         symbol: str = "CRUDEOILM",
@@ -198,10 +205,10 @@ class MCXOptionChainFetcher:
         }
 
         try:
-            r = sess.get(self.GET_CHAIN_API, params=params, timeout=12)
+            r = sess.get(self.GET_CHAIN_API, params=params, timeout=6)
             if r.status_code in (401, 403, 404):
                 sess = self._get_session(force_refresh=True)
-                r = sess.get(self.GET_CHAIN_API, params=params, timeout=12)
+                r = sess.get(self.GET_CHAIN_API, params=params, timeout=6)
 
             if r.status_code != 200:
                 logger.warning("MCX GetOptionChain returned HTTP %s for %s", r.status_code, sym)
@@ -292,6 +299,7 @@ def overlay_live_mcx_on_chain(
     symbol: str,
     spot_close: float,
     opt_slice: Any,
+    cache_only: bool = False,
 ) -> tuple[float, Any]:
     """
     Overlay live/delayed MCX option chain quotes onto a DataStore option slice
@@ -303,7 +311,7 @@ def overlay_live_mcx_on_chain(
         return spot_close, opt_slice
 
     fetcher = get_mcx_delayed_fetcher()
-    chain = fetcher.fetch_option_chain(sym)
+    chain = fetcher.get_cached_chain(sym) if cache_only else fetcher.fetch_option_chain(sym)
     if not chain or float(chain.get("spot_price", 0.0)) <= 0:
         return spot_close, opt_slice
 
@@ -362,8 +370,14 @@ def overlay_live_mcx_on_chain(
     if not quote_lookup:
         return live_spot, opt_slice
 
+    exp_iso = str(chain.get("expiry_iso") or "")[:10]
     df = opt_slice.copy()
+    has_exp_col = "expiry" in df.columns
     for idx, r in df.iterrows():
+        if has_exp_col and exp_iso:
+            row_exp = str(r.get("expiry", ""))[:10]
+            if row_exp and row_exp[:7] != exp_iso[:7]:
+                continue
         key = (round(float(r.get("strike", 0.0)), 2), str(r.get("option_type", "")).upper())
         leg = quote_lookup.get(key)
         if not leg:
