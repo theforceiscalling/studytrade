@@ -6,7 +6,7 @@
 set -euo pipefail
 
 APP_DIR="/opt/studytrade"
-LOG_FILE="/var/log/studytrade_daily_sync.log"
+LOG_FILE="${APP_DIR}/data/daily_sync.log"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting automated daily market data sync..." >> "${LOG_FILE}"
 
